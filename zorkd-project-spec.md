@@ -1,48 +1,59 @@
-# Zork I Web Server — Project Specification
+# Zork Web Server — Project Specification
 
 **Status:** Implementation specification  
 **Working name:** `zorkd`  
-**Primary language:** Go  
+**Primary language:** Go 1.26 or later  
+**Execution engine:** `github.com/maloquacious/zmachine` v0.2.0 (pinned)  
 **Database:** SQLite via ZombieZen (`zombiezen.com/go/sqlite`)  
 **Frontend:** Server-rendered HTML + HTMX + Alpine.js  
-**Game target:** Zork I running on a deliberately constrained Z-machine Version 3 interpreter
+**Game target:** Zork I, Zork II and Zork III, executed from their original `.z3` story files
 
 ---
 
 ## 1. Purpose
 
-Build a self-contained Go web application that runs **Zork I: The Great Underground Empire** on the server and presents it to authenticated users through a browser interface modeled after an early-1980s computer terminal.
+Build a self-contained Go web application that runs the original Infocom **Zork** trilogy on the server and presents it to authenticated users through a browser interface modeled after an early-1980s computer terminal.
 
 The application owns:
 
 - user authentication;
 - per-user game state;
-- the Z-machine Version 3 interpreter;
+- the turn cycle around the Z-machine engine;
 - automatic persistence after player input;
 - explicit named saves and restores;
-- terminal rendering state;
+- terminal rendering, including word wrapping and the status line;
 - static web assets.
 
-The browser does **not** run the Z-machine. It acts as a thin terminal client.
+The application does **not** own the Z-machine. Version 3 execution comes from `github.com/maloquacious/zmachine`, an external, separately tested package. This project is its host.
 
-The initial implementation is explicitly **not** a general-purpose Z-machine interpreter or interactive-fiction platform. It implements the subset of Z-machine Version 3 required to run the selected Zork I story image correctly.
+The browser does **not** run the Z-machine either. It acts as a thin terminal client.
+
+This is explicitly **not** a general-purpose interactive-fiction platform. The engine's compatibility is validated on Zork I, II and III; the wider Version 3 catalog is unproven and out of scope until that testing is budgeted.
 
 ---
 
 ## 2. Design Principles
 
-### 2.1 Zork I first
+### 2.1 Zork first
 
-Compatibility with Zork I is the primary requirement. General Z-machine compatibility is secondary.
+Running Zork I, II and III reliably is the primary requirement. General interactive-fiction compatibility is secondary and, for now, out of scope.
 
-Do not implement later Z-machine versions merely for completeness.
+Do not build for other story files, other Z-machine versions, or a story catalog merely for completeness.
 
 When a choice exists between:
 
-1. a small, well-tested implementation sufficient for Zork I; and
-2. a generalized abstraction anticipating future interpreters or games;
+1. a small, well-tested implementation sufficient for the Zork trilogy; and
+2. a generalized abstraction anticipating future games or engines;
 
 prefer the first unless the generalized design is equally simple.
+
+### 2.1.1 Host, not interpreter
+
+Z-machine behavior is the engine's responsibility. This application supplies input, renders output, and stores state between turns.
+
+An apparent interpreter bug is investigated and then reported upstream at `maloquacious/zmachine` with the story file, the exact input sequence, and the previous turn's saved state. It is not worked around locally.
+
+Do not describe the engine as conforming to Z-machine Standard 1.1 in product copy. It implements Version 3, is written against Standard 1.1, and deliberately leaves the header's standard revision number unset.
 
 ### 2.2 Server-authoritative state
 
@@ -77,7 +88,7 @@ persist resulting machine state
 render response
 ```
 
-The server should not require a permanently running goroutine, process, or VM instance for each player.
+The server should not require a permanently running goroutine, process, or machine for each player. Rebuilding the machine every turn is observably identical to keeping one open; the engine's own integration tests assert it.
 
 ### 2.4 Thin browser
 
@@ -134,23 +145,24 @@ Go Server
 |              |                                 |
 |              v                                 |
 | game application service                       |
+|   command interception, turn cycle, rendering  |
 |              |                                 |
 |       +------+-------+                         |
 |       |              |                         |
 |       v              v                         |
-| Z-machine v3      persistence                  |
-| interpreter       ZombieZen SQLite             |
+| zmachine engine   persistence                  |
+| (external pkg)    ZombieZen SQLite             |
 |       |              |                         |
 |       v              v                         |
-| zork1.z3          zork.db                      |
+| games/*.z3        zork.db                      |
 +------------------------------------------------+
 ```
 
-The HTTP layer must not contain Z-machine implementation details.
+The HTTP layer must not import the engine or contain Z-machine details.
 
-The Z-machine package must not know about HTTP, authentication, users, HTMX, HTML, or SQLite.
+The engine knows nothing about HTTP, authentication, users, HTMX, HTML, or SQLite, and it is not this project's job to teach it.
 
-Persistence should store opaque serialized game-state data produced by the game/interpreter layer rather than reaching into VM internals.
+Persistence stores the engine's `Result.State` as an opaque blob. Nothing in this application parses it.
 
 ---
 
@@ -158,7 +170,7 @@ Persistence should store opaque serialized game-state data produced by the game/
 
 ### 4.1 Go
 
-Use a currently supported Go release.
+Use Go 1.26 or later. The engine requires it.
 
 Prefer the standard library where it is sufficient, particularly:
 
@@ -171,7 +183,28 @@ Prefer the standard library where it is sufficient, particularly:
 
 Third-party packages should have a clear purpose and should not replace simple standard-library functionality without benefit.
 
-### 4.2 SQLite
+### 4.2 Z-machine engine
+
+Use:
+
+```text
+github.com/maloquacious/zmachine v0.2.0
+```
+
+Pin the tag. The engine is `v0.x` and its exported API has already moved once — `ExecutionError.Op` changed type in 0.2.0 — so a minor bump may break the build before `v1.0.0`. Read the engine's `CHANGELOG.md` on every version bump.
+
+The engine imports nothing outside the standard library and `github.com/maloquacious/quetzal`.
+
+Saved state is a stronger promise than the API: a `Result.State` stays restorable for as long as the story file is unchanged, whatever engine version wrote it. Stored state never needs migrating and the producing build never needs recording.
+
+The engine's own documentation is authoritative for its behavior:
+
+- `docs/tutorial.md` — three turns of Zork I, rebuilding the machine between each;
+- `docs/how-to/` — persisting state, cancelled requests, concurrent players;
+- `docs/reference.md` — lifecycle, options, `Result`, errors, concurrency, limits;
+- `pkg.go.dev` — per-symbol signatures.
+
+### 4.3 SQLite
 
 Use:
 
@@ -187,7 +220,7 @@ Database access should be explicit and small. A large ORM is not desired.
 
 Schema changes must be represented by versioned migrations.
 
-### 4.3 HTMX
+### 4.4 HTMX
 
 HTMX is the primary browser/server interaction mechanism.
 
@@ -202,7 +235,7 @@ Typical command submission:
 
 The exact markup may evolve, but the interaction model should remain HTML-over-the-wire rather than JSON API + client-side application rendering.
 
-### 4.4 Alpine.js
+### 4.5 Alpine.js
 
 Alpine.js supplements HTMX.
 
@@ -216,81 +249,110 @@ Appropriate uses include:
 
 Alpine must not become a second application architecture.
 
-### 4.5 Embedded assets
+### 4.6 Embedded assets
 
 Where licensing permits, use `//go:embed` for templates and static application assets so deployment remains simple.
 
-Whether the Zork story image itself is embedded or supplied at deployment time must be isolated behind story-loading code and documented clearly.
+Whether the Zork story images are embedded or supplied at deployment time must be isolated behind story-loading code and documented clearly.
 
 ---
 
 ## 5. Game Runtime Model
 
-### 5.1 Story image
+### 5.1 Story images
 
-The interpreter consumes a Z-machine Version 3 story image for Zork I.
+The application loads each supported `.z3` story image once, at startup:
 
-The application must validate the story header before execution and reject unsupported Z-machine versions.
+```go
+story, err := zmachine.LoadStory(data)
+```
 
-The story image is immutable during execution.
+`LoadStory` validates the entire image, checks every header address and table extent, and rejects any version other than 3. It copies the bytes it is given, so the embedded slice is never modified by execution.
+
+The resulting `*zmachine.Story` is immutable, safe for concurrent use, and kept for the life of the process. Loading is the expensive step; everything after it is per request.
+
+Key each loaded story by a **SHA-256 over the story image**, taken before `LoadStory` is called. Do not key by release and serial: those identify an edition rather than a file, and `Story.Checksum()` is 0 for early Version 3 stories that carry none.
 
 ### 5.2 Machine creation
 
-A conceptual API:
+A `*zmachine.Machine` is created from a `*Story` per request:
 
 ```go
-type Machine struct {
-    // unexported implementation
-}
-
-func New(story []byte, opts ...Option) (*Machine, error)
-func Restore(story, snapshot []byte, opts ...Option) (*Machine, error)
+machine, err := zmachine.New(story,
+    zmachine.WithLogger(logger),
+    zmachine.WithInstructionLimit(5_000_000),
+)
 ```
 
-The actual API may differ, but callers must not need to manipulate VM internals.
+`New` is cheap: it copies only dynamic memory — 11,282 bytes of Zork I's 86,838 — and shares the rest of the image with the `Story`.
+
+A `Machine` owns all mutable execution state and is **not** safe for concurrent use. One machine belongs to one goroutine for the duration of one call. Do not cache or pool machines between turns.
 
 ### 5.3 Execution
 
-Execution proceeds until the VM reaches an event requiring the host application.
-
-A useful conceptual model is:
+Two calls advance a story, and each runs until the next input boundary or termination:
 
 ```go
-type Event interface {
-    isEvent()
-}
-
-type Output struct {
-    Text string
-}
-
-type InputRequested struct{}
-
-type SaveRequested struct{}
-
-type RestoreRequested struct{}
-
-type Quit struct{}
+func (m *Machine) Start(ctx context.Context) (Result, error)
+func (m *Machine) Run(ctx context.Context, input string) (Result, error)
 ```
 
-The interpreter may expose a `Run`, `Step`, or event-oriented API. The important requirement is that host interaction occurs through explicit boundaries rather than callbacks into HTTP code.
+`Start` begins a new game and supplies no input. `Run` supplies one line. The valid sequences are:
+
+```text
+new game:      New → Start                  → Result
+resumed turn:  New → Restore → Run(command) → Result
+```
+
+`Result` carries what the host needs:
+
+| Field | Meaning |
+| --- | --- |
+| `Output` | Story text, whitespace preserved exactly. Never the status line. |
+| `UpperWindow` | Text printed to the upper window, with no cursor positions attached. |
+| `StatusLine` | Room, score and turns as of the moment execution stopped. |
+| `State` | Resumable state. Non-nil when waiting for input; nil when halted. |
+| `Status` | `WaitingForInput` or `Halted`. |
+
+There is no event stream and no callback into host code. The boundary is the return of the call.
 
 ### 5.4 Input lifecycle
 
 For a normal command:
 
 1. Authenticate the request.
-2. Locate the user's active Zork game.
-3. Load its persisted snapshot.
-4. Restore the VM.
-5. Supply the submitted line of text.
-6. Execute until the next input request or other host event.
-7. Capture terminal operations/output.
-8. Serialize the resulting VM state.
-9. Atomically persist the new state.
-10. Return an HTML terminal fragment.
+2. Locate the user's active game and take the per-session lock.
+3. Intercept `SAVE`, `RESTORE` and any other host-owned command (section 13). These never reach the engine.
+4. Load the persisted state and the story it belongs to.
+5. `zmachine.New(story)` with a request-scoped context deadline and an instruction limit.
+6. `machine.Restore(saved)`.
+7. `machine.Run(ctx, command)`.
+8. On success, atomically persist `result.State` and render `result.Output`, `result.UpperWindow` and `result.StatusLine`.
+9. Discard the machine.
 
-A failed execution must not overwrite the last known-good persisted state.
+A failed execution must not overwrite the last known-good persisted state. On any error the `Result` is unusable — there is no partial turn to salvage — and the previously stored state is still exactly right, because the machine that failed was a copy and nothing outside it changed.
+
+Write nothing to storage on the failure path.
+
+### 5.4.1 Failure classification
+
+Test for context cancellation first: it returns the context's own error, unwrapped, and wraps no engine sentinel. A `default` branch that assumes an engine error will report a disconnected client as an interpreter bug.
+
+| Condition | Response |
+| --- | --- |
+| `context.Canceled` | The client is gone. Log it and return; there is nobody to answer. |
+| `context.DeadlineExceeded` | Tell the player the turn did not happen. Safe to retry with a fresh context, the same stored state and the same command. |
+| `ErrExecutionLimit` | Not transient — a retry stops in the same place. Report it; do not replay automatically. |
+| `ErrInvalidState` | The bytes are damaged or belong to a different story. Check the stored story key before assuming corruption. |
+| `ErrExecutionFault`, `ErrInvalidOpcode` | Log with the program counter from `*ExecutionError` and report upstream. |
+
+A cancelled or timed-out turn is not a game over. The session is intact.
+
+### 5.4.2 Fault logging
+
+Log `ErrExecutionFault` and `ErrInvalidOpcode` with the program counter from the first deployment.
+
+The engine's deepest test route is roughly 46 turns plus a longer multi-seed route. Opening and mid-game are well covered; no test finishes a game, so late-game code paths have never executed. Silence is not evidence of correctness in territory nothing has walked yet.
 
 ### 5.5 Automatic continuation
 
@@ -308,60 +370,41 @@ followed by closing the browser must be sufficient for the player to resume afte
 
 ---
 
-## 6. Z-machine Scope
+## 6. Engine Scope and Host Responsibilities
 
-### 6.1 Supported version
+### 6.1 What the engine provides
 
-Initial target:
+Version 3 execution, complete: the full opcode set, memory, objects and properties, dictionary and tokenization, Z-string decoding, the evaluation stack and call frames, random numbers, input boundaries, and resumable state. `LoadStory` rejects every version other than 3.
 
-**Z-machine Version 3 only.**
+Story files and saved states are treated as hostile binary input. Every address, length and count is checked before it is used to index, allocate or slice, and malformed input is an error rather than a panic.
 
-The interpreter must reject unsupported story versions with a useful error.
+### 6.2 What the host owns
 
-### 6.2 Required subsystems
+These are host responsibilities by design, not engine gaps to wait on.
 
-Implement, as required by Zork I:
+**Rendering.** No word wrapping, no screen width, no cursor model. `Result.Output` preserves the story's whitespace exactly, and the roughly 80-column terminal presentation is this application's work. Do not insert newlines into story text in a way that corrupts its own whitespace.
 
-- story-file header parsing;
-- static and dynamic memory;
-- instruction decoding;
-- 0OP, 1OP, 2OP and VAR instruction forms required by the game;
-- variables;
-- evaluation stack;
-- routine calls and call frames;
-- branching;
-- object tree;
-- attributes;
-- properties;
-- dictionary access;
-- Z-character/Z-string decoding;
-- abbreviation tables;
-- tokenization and parsing;
-- random number generation;
-- input;
-- output;
-- Version 3 screen/window behavior required by Zork;
-- save;
-- restore;
-- restart;
-- quit;
-- snapshot serialization.
+**The upper window.** `Result.UpperWindow` is a separate string with no cursor positions attached. Presenting it is this application's work.
 
-Unsupported instructions must fail explicitly during development rather than silently behaving incorrectly.
+**The status line.** `Result.StatusLine` is reported, never printed. Check `Available` before using any other field. Zork is a score game, so `Score` and `Turns` are the meaningful fields; `Hours` and `Minutes` belong to time games.
+
+**Saving.** In-story `SAVE` and `RESTORE` report failure without branching. See section 13.
+
+**Transport, users, persistence, transactions, retries, idempotency, concurrency control.** The engine has no filesystem, no network, no environment, and never touches process state.
 
 ### 6.3 Compatibility strategy
 
-Development should proceed from observable Zork I requirements while consulting the Z-machine specification.
+Compatibility is validated upstream on Zork I, II and III, and differentially against dfrotz on Zork I: transcripts, status lines and game state all match, and dfrotz successfully resumes a state this engine wrote.
 
-A conformance test suite is valuable, but complete Z-machine conformance is not a release requirement for the first version.
-
-Regression tests should be added whenever an opcode or VM behavior is implemented.
+This application's job is to notice and report divergence, not to correct it. A suspected interpreter bug becomes a regression test here and an upstream issue there.
 
 ### 6.4 Determinism
 
-Where possible, VM behavior should be deterministic under test.
+Determinism under test comes from `zmachine.WithRandomSeed(seed)`. Two machines given the same story and the same seed produce the same sequence.
 
-Random-number generation should permit injection or seeding so scripted game sequences can be reproduced.
+Do not invent a local randomness abstraction. Without the option the generator is seeded unpredictably, which is what a real game wants, and the generator's state travels inside `Result.State`, so a restored session continues its sequence rather than starting a fresh one.
+
+`WithFrotzRandomSeed` exists for differential comparison against Frotz and is not something this application needs.
 
 ---
 
@@ -397,9 +440,10 @@ CREATE TABLE users (
 CREATE TABLE games (
     id          INTEGER PRIMARY KEY,
     user_id     INTEGER NOT NULL,
-    story_id    TEXT NOT NULL,
-    state       BLOB NOT NULL,
+    story_key   BLOB NOT NULL,              -- SHA-256 of the story file
+    state       BLOB,                       -- Result.State; NULL once halted
     turn        INTEGER NOT NULL DEFAULT 0,
+    version     INTEGER NOT NULL DEFAULT 0, -- bumped every turn; see section 9
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
 
@@ -422,33 +466,31 @@ Add indexes based on actual query patterns.
 
 Foreign-key enforcement must be enabled.
 
-### 7.3 Snapshot format
+### 7.3 Saved state
 
-The VM package owns snapshot serialization.
+The engine owns state serialization. This application stores bytes.
 
-Snapshots must contain everything necessary to resume execution exactly, including at minimum:
+`Result.State` is a complete, self-contained snapshot — not a delta, not a link in a chain — so the most recent one is the only one a session needs. Nothing has to be replayed, and states may be deleted in any order.
 
-- dynamic memory;
-- program counter;
-- evaluation stack;
-- routine/call frames;
-- local variables;
-- any interpreter state required for correct continuation;
-- RNG state if necessary for exact continuation.
+Rules:
 
-The snapshot format must contain a version identifier so it can evolve.
+- write the state whole, replacing whatever was stored last turn;
+- use a `BLOB` column, not a fixed-width one. A Zork I state is 356 bytes at the opening prompt and around 500 a few turns in; it grows as dynamic memory diverges from the story file, not with the number of turns;
+- do not compress it. Dynamic memory is already a run-length-compressed difference against the story file, so a second pass buys almost nothing;
+- do not parse, edit or inspect it. Do not recover the score or room name from it — `Result.StatusLine` reports those. Any field recovered by hand ties this application to a format that is free to change;
+- store the story key (section 5.1) beside it. A state only restores into a machine built from the story it was saved from;
+- do not store which engine version wrote it. A state restores for as long as the story file is byte-identical, so stored state needs no migration on an engine upgrade;
+- `Result.State` is nil when `Result.Status` is `Halted`. Do not overwrite a good state with nil unless the session is deliberately being closed — storing nil turns the next restore into a failure that reads as corruption.
 
-Do not serialize Go structs with `gob` as the long-term storage contract.
-
-A small explicit binary format is preferred.
+For undo or multiple save slots, keep more than one row. Each state stands alone, so any of them restores by itself. Do not build anything on top of the format.
 
 ### 7.4 Quetzal
 
-Standard Quetzal save-file support is desirable but is **not required for the initial milestone**.
+The saved state happens to be in the Quetzal format, and `github.com/maloquacious/quetzal` is an indirect dependency through the engine. Neither fact is this application's to use.
 
-The internal snapshot format may be simpler.
+Do not import `quetzal` directly, and do not treat the state as anything but opaque bytes.
 
-Quetzal should be considered later for import/export and interoperability with other Z-machine interpreters.
+Interoperability with other interpreters is a possible future feature, not a current requirement. The engine already accepts foreign saves, moving their program counter to its own input boundary; exposing that as a product feature is a separate decision.
 
 ---
 
@@ -489,15 +531,29 @@ The application must prevent one user from reading, modifying, restoring, or del
 
 ## 9. Concurrency
 
+Concurrency *between* sessions is free. One `*Story` backs any number of simultaneous machines, machines built from the same story share nothing but immutable memory, and the engine keeps no mutable state in a package-level variable. Two players in the same room of the same game cannot see each other.
+
+Concurrency *within* one session is a correctness problem this application must solve, and the engine cannot solve it: two turns starting from the same stored state will both succeed, both write, and one will be overwritten. The player watches a command vanish.
+
 A user may accidentally submit multiple commands from multiple tabs or devices.
 
-The application must prevent concurrent updates from corrupting or forking an active game unintentionally.
+At minimum:
 
-At minimum, use optimistic concurrency around a game revision/turn number or serialize updates per game.
+- take a per-session lock for the whole read-run-write cycle. A mutex is enough for one process;
+- across processes, make the write conditional on the state that was read — the `version` column bumped each turn, and an update that matches on it:
+
+```sql
+UPDATE games SET state = ?, version = version + 1, turn = ?
+ WHERE id = ? AND version = ?;
+```
+
+Zero rows affected means another turn got there first. Fail that request. Do not replay it against the newer state; the player issued it against the old one.
 
 A stale request should receive a controlled response instructing the browser to refresh the current terminal state rather than overwriting newer state.
 
 Database transactions must preserve the last known-good state.
+
+A `*slog.Logger` given to `WithLogger` is safe to share across machines. A `Tracer` is not — give each machine its own, or make it safe for concurrent calls.
 
 ---
 
@@ -569,45 +625,41 @@ Nevertheless, the server should remain the source of truth, and browser refreshe
 
 ## 11. Terminal Model
 
-Do not send HTML from the Z-machine package.
+The engine hands back text, not display operations, and there is no screen model to inherit. The terminal is built here.
 
-The interpreter should produce semantic terminal operations or a similarly neutral representation.
+A turn produces three things worth rendering:
 
-For example:
+| From the engine | Rendered as |
+| --- | --- |
+| `Result.Output` | The scrolling transcript. |
+| `Result.UpperWindow` | Whatever upper-window presentation the UI chooses. No cursor positions are attached. |
+| `Result.StatusLine` | The status bar, drawn by this application. |
 
-```go
-type TerminalOp interface {
-    terminalOp()
-}
+Story output is data, never trusted HTML. Escape it on the way into a template. This is the same separation the terminal-operation model was reaching for, enforced at the rendering layer instead.
 
-type Write struct {
-    Text string
-}
+### 11.1 Word wrapping
 
-type SetStatus struct {
-    Text string
-}
+The engine performs no word wrapping and has no notion of screen width, because inserting newlines would corrupt the story's own whitespace.
 
-type Clear struct{}
+Wrapping is therefore this application's work. Wrap for the roughly 80-column presentation described in section 10, and preserve the story's blank lines and leading spaces while doing it. Whitespace the story emitted deliberately — indentation, blank lines between paragraphs, the trailing `>` prompt with no newline after it — is meaningful.
 
-type Prompt struct{}
-```
+Prefer wrapping in CSS where the presentation allows it, so the stored transcript keeps the story's text as the story wrote it.
 
-The web layer converts these operations into HTML.
+### 11.2 Status line
 
-This separation prevents game output from becoming trusted HTML and makes interpreter testing independent of the browser.
+`Result.StatusLine` is reported rather than printed, and is updated in exactly two circumstances: when the story executes `show_status`, and immediately before a line-input instruction reads.
 
-### 11.1 Status line
+Check `Available` before using any other field; the rest are meaningless until it is true.
 
-Honor the Version 3 screen/status behavior used by Zork I.
+Zork is a score game, so render `Name`, `Score` and `Turns`. `Hours` and `Minutes` apply only when `TimeGame` is true and are not expected here.
 
-The web UI may render the status line separately from scrolling transcript text.
+The web UI should render the status line separately from the scrolling transcript.
 
-### 11.2 Transcript
+### 11.3 Transcript
 
 The server should retain enough information to reconstruct the player's useful terminal view after refresh or login.
 
-Do not assume the VM snapshot itself contains a display transcript.
+The saved state contains no display transcript, and nothing in it may be parsed to recover one.
 
 Possible approaches include:
 
@@ -649,7 +701,7 @@ Expected application errors should be represented cleanly in terminal UI rather 
 
 Unexpected server errors should:
 
-- preserve the previous game snapshot;
+- preserve the previously stored game state;
 - be logged with useful context;
 - return a safe user-facing error;
 - never expose stack traces or secrets.
@@ -666,17 +718,27 @@ Do not confuse command history with authoritative game state.
 
 ## 13. Save and Restore
 
-There are two distinct concepts.
+There are two distinct concepts, and one product decision that shapes the UI.
 
-### 13.1 Automatic state
+### 13.1 The decision: intercept `SAVE` and `RESTORE`
+
+In-story `SAVE` and `RESTORE` report failure without branching. That is legal Version 3 behavior and the story copes — but in Zork I the player simply sees `Failed.`
+
+Since this application owns persistence, the game service intercepts `SAVE` and `RESTORE` **before** the input reaches `machine.Run` and wires them to session storage. The engine never sees those commands and is not involved in the save UI.
+
+Settle the wording and flow before the first playable build; it shapes the terminal UI.
+
+Interception must be conservative. Match the commands the player actually types for saving and restoring, pass everything else through unchanged, and never let a heuristic swallow a legitimate game command.
+
+### 13.2 Automatic state
 
 The active game is automatically persisted after every completed command/input cycle.
 
 This is the normal continuation mechanism.
 
-### 13.2 Named saves
+### 13.3 Named saves
 
-When the Z-machine requests a traditional save, the host application should present an appropriate terminal-style UI for naming the save.
+When the player asks to save, the application presents a terminal-style UI for naming the save and stores the current state under that name.
 
 Example:
 
@@ -687,7 +749,7 @@ Game saved.
 
 Named saves belong to the active game/user.
 
-### 13.3 Restore
+### 13.4 Restore
 
 A restore request may present saved games in a terminal-oriented selector.
 
@@ -703,13 +765,15 @@ Saved games:
 Restore which? _
 ```
 
-The host application owns the storage UI; the Z-machine owns the semantics of the save/restore opcode result.
+Restoring a named save means promoting its stored bytes to the active game state. There is no engine call for it beyond the ordinary `New` + `Restore` of the next turn.
 
-### 13.4 Restart
+Every save row belongs to one game and one user, and every restore must verify that ownership.
 
-`RESTART` must restore the story to its initial state according to Version 3 semantics.
+### 13.5 Restart
 
-The web application may request confirmation before destructive restart, but that confirmation belongs outside the VM.
+`RESTART` is implemented by the engine: the story executes the opcode, the machine returns to its initial state, and the resulting `Result.State` is persisted like any other turn. No special host handling is required to make it work.
+
+The web application may request confirmation before a destructive restart, but that confirmation belongs outside the engine.
 
 ---
 
@@ -757,30 +821,18 @@ A starting structure:
 ├── internal/
 │   ├── auth/
 │   ├── database/
-│   ├── game/
+│   ├── game/          # the turn cycle; the only importer of zmachine
+│   │   ├── library.go # LoadStory once per story, keyed by SHA-256
+│   │   ├── turn.go    # New → Restore → Run → persist → discard
+│   │   ├── command.go # SAVE/RESTORE interception
+│   │   └── errors.go  # engine error classification
 │   ├── httpserver/
 │   ├── session/
-│   └── zmachine/
-│       ├── machine.go
-│       ├── header.go
-│       ├── memory.go
-│       ├── decode.go
-│       ├── instruction.go
-│       ├── op0.go
-│       ├── op1.go
-│       ├── op2.go
-│       ├── opvar.go
-│       ├── stack.go
-│       ├── routine.go
-│       ├── object.go
-│       ├── property.go
-│       ├── text.go
-│       ├── dictionary.go
-│       ├── random.go
-│       ├── input.go
-│       ├── output.go
-│       ├── screen.go
-│       └── snapshot.go
+│   └── terminal/      # word wrapping, status line, transcript rendering
+├── games/
+│   ├── zork1/
+│   ├── zork2/
+│   └── zork3/
 ├── migrations/
 ├── web/
 │   ├── static/
@@ -791,13 +843,17 @@ A starting structure:
 └── README.md
 ```
 
+There is no `internal/zmachine`. Execution is an external dependency, and a local package that only renames the engine's types would be a wrapper for its own sake.
+
 Do not treat this layout as immutable. Prefer packages that correspond to real boundaries rather than creating packages merely to organize filenames.
 
 ---
 
 ## 16. Story Licensing and Provenance
 
-The project must document exactly where its Zork I source/story image comes from and under what license it is distributed.
+The project must document exactly where each Zork story image comes from and under what license it is distributed. Each file under `games/` carries its own `LICENSE` beside it; see `games/README.md`.
+
+Story file names carry the release and serial number from the story's own header — `zork1-r119-880429.z3` — because a saved state only restores against the exact story it was made from. Do not rename them to bare `zorkN.z3`.
 
 Keep separate:
 
@@ -821,7 +877,7 @@ At minimum:
 - use secure cookies;
 - enforce CSRF protection appropriate to the chosen session/HTMX design;
 - escape all game output when rendering HTML;
-- never treat Z-machine output as HTML;
+- never treat story output as HTML;
 - limit command/input size;
 - limit save names and validate them as data, not filesystem paths;
 - use database identifiers rather than user-controlled filenames;
@@ -830,9 +886,14 @@ At minimum:
 - limit request body sizes;
 - prevent concurrent state overwrite;
 - do not expose arbitrary story-file loading to ordinary users;
-- do not provide filesystem access through Z-machine save/restore operations.
+- do not provide filesystem access through save/restore operations;
+- bound every turn with a context deadline and an instruction limit (section 5.2), so one player cannot hold a worker.
 
-The Z-machine executes untrusted-ish bytecode from the perspective of the host. Memory accesses, object accesses, instruction decoding, stack operations, and story addresses must be bounds checked sufficiently to prevent malformed story data from crashing or compromising the server.
+The engine treats story files and saved states as hostile binary input: every address, length and count is checked before it is used to index, allocate or slice, and malformed input is reported as an error rather than a panic. A hostile save cannot turn a declared length into an allocation, because a restored call chain or stack can never be larger than the machine would have built itself.
+
+That is the engine's guarantee, not a reason to skip ours. Do not assume a stored state is valid merely because this server previously produced it; persisted data can be corrupted, and `ErrInvalidState` must be handled rather than treated as impossible.
+
+Vulnerabilities in the engine follow its `SECURITY.md` rather than its public issue tracker.
 
 ---
 
@@ -851,6 +912,10 @@ route
 duration
 error
 ```
+
+Pass a `*slog.Logger` to the engine with `zmachine.WithLogger`. It receives interpreter diagnostics only; story output is never written to it, and logging never changes execution semantics. A machine created without the option discards diagnostics and never falls back to `slog.Default`.
+
+Log `ErrExecutionFault` and `ErrInvalidOpcode` from the first deployment, with the program counter and opcode from `*zmachine.ExecutionError`, at a level that will actually be seen. Late-game code paths have never executed under test (section 5.4.2).
 
 Do not log:
 
@@ -874,7 +939,9 @@ ZORK_ADDR
 ZORK_DATABASE
 ZORK_BASE_URL
 ZORK_SESSION_SECRET
-ZORK_STORY_FILE
+ZORK_GAMES_DIR        # only when stories are not embedded
+ZORK_TURN_TIMEOUT     # context deadline per turn
+ZORK_INSTRUCTION_LIMIT
 ```
 
 Support environment variables and/or command-line flags using standard-library mechanisms unless requirements grow.
@@ -885,52 +952,54 @@ Secrets must not be committed to the repository.
 
 ## 20. Testing Strategy
 
-### 20.1 Z-machine unit tests
+The engine has its own suite — 715 tests under `-race`, six fuzz targets, and a differential comparison against dfrotz on Zork I. Do not duplicate it. Test the host.
 
-The VM should be heavily testable without HTTP or SQLite.
+### 20.1 Game service tests
+
+The turn cycle should be testable without HTTP or SQLite.
 
 Test:
 
-- header parsing;
-- memory rules;
-- instruction decoding;
-- operand decoding;
-- branches;
-- variables;
-- stack behavior;
-- calls/returns;
-- objects;
-- attributes;
-- properties;
-- Z-string decoding;
-- dictionary lookup;
-- tokenization;
-- RNG behavior;
-- snapshot/restore.
+- loading each story and rejecting a file that is not a Version 3 story;
+- keying a session to a story by SHA-256;
+- the `New` → `Restore` → `Run` → persist → discard cycle;
+- `Start` for the first turn of a new game;
+- each error class in section 5.4.1, including that nothing is written on a failed turn;
+- a `DeadlineExceeded` retry producing the turn the first attempt would have;
+- a state refused with `ErrInvalidState` being reported rather than read as corruption;
+- a nil `Result.State` on `Halted` not overwriting the last playable state.
 
-### 20.2 Snapshot invariant
+### 20.2 State round-trip invariant
 
-A key property:
+The key property, which the engine guarantees and this application depends on:
 
 ```text
 machine A
    |
  execute commands
    |
- snapshot
+ persist Result.State
    |
- restore
+ New + Restore
    v
 machine B
 ```
 
 Machine B must behave equivalently to machine A from that point onward.
 
-Add tests that execute input, snapshot, restore into a new machine, and continue execution.
+Assert it at this layer with a real story, so a regression in how state is stored or handed back is caught here rather than in production.
 
-### 20.3 Scripted Zork tests
+### 20.3 Rendering tests
 
-Once enough opcodes exist, add end-to-end transcripts.
+Word wrapping, status-line presentation, upper-window handling and HTML escaping are this application's work, so they need this application's tests. Feed known `Result` values and assert the rendered output, including that the story's deliberate whitespace survives.
+
+### 20.4 Command interception tests
+
+`SAVE` and `RESTORE` typed by a player must reach session storage and must never reach `machine.Run`. Every other command must pass through untouched.
+
+### 20.5 Scripted Zork tests
+
+Add end-to-end transcripts against the real story files with a fixed seed (`zmachine.WithRandomSeed`).
 
 For example:
 
@@ -943,9 +1012,9 @@ read leaflet
 
 Assert expected significant output and successful arrival at the next input boundary.
 
-Avoid tests that depend unnecessarily on exact whitespace when semantic output is sufficient.
+Avoid tests that depend unnecessarily on exact whitespace when semantic output is sufficient — but do assert whitespace where the terminal rendering depends on it.
 
-### 20.4 Persistence tests
+### 20.6 Persistence tests
 
 Test:
 
@@ -956,10 +1025,14 @@ Test:
 - named restore;
 - restart;
 - user isolation;
-- stale/concurrent updates;
-- transaction rollback after interpreter failure.
+- stale/concurrent updates, including the conditional write in section 9;
+- transaction rollback after an execution failure.
 
-### 20.5 HTTP tests
+### 20.6.1 Upstream regressions
+
+A bug that turns out to belong to the engine still gets a test here — the smallest reproducer that demonstrates it — so this project notices when the upstream fix lands. The upstream report is the story file, the exact input sequence, and the previous turn's `Result.State`.
+
+### 20.7 HTTP tests
 
 Use `net/http/httptest`.
 
@@ -969,73 +1042,68 @@ Test both normal navigation and HTMX fragment behavior.
 
 ## 21. Implementation Milestones
 
-### Milestone 1 — Story inspection
+### Milestone 1 — Story library
 
-- Load a Zork I `.z3` file.
-- Parse and validate its Version 3 header.
-- Expose diagnostic information in tests or a development command.
+- Depend on `github.com/maloquacious/zmachine` at the pinned tag.
+- Load all three `.z3` files with `LoadStory` at startup.
+- Key each by SHA-256 and expose release, serial and size for diagnostics.
+- Reject a file that is not a Version 3 story, with a useful error.
 - Establish story provenance/licensing documentation.
 
-### Milestone 2 — Minimal VM
+### Milestone 2 — First turn
 
-- Implement memory.
-- Implement instruction decoding.
-- Implement variables and stack.
-- Implement routine calls.
-- Implement enough output/text decoding to begin booting Zork.
-- Fail clearly on the first unsupported opcode.
+- Create a machine, call `Start`, and print the opening of each game.
+- Bound the call with a context deadline and an instruction limit.
+- Classify every error class in section 5.4.1.
 
-Goal:
+### Milestone 3 — The turn function
 
-```text
-go test ./...
+Implement the whole cycle as one function with no HTTP in it:
+
+```go
+func turn(story *zmachine.Story, saved []byte, command string) (zmachine.Result, error)
 ```
 
-provides a steadily advancing, test-driven path through Zork startup.
+New machine, stored state, one command, machine discarded. This is the shape everything else is built on; a request handler is this function with an HTTP request in front of it.
 
-### Milestone 3 — Reach the first prompt
+### Milestone 4 — Development CLI
 
-Implement enough Version 3 behavior for Zork I to boot and produce:
-
-```text
-West of House
-...
->
-```
-
-This is the first major interpreter milestone.
-
-### Milestone 4 — Interactive CLI
-
-Before building the web application, provide a development CLI capable of:
+Before building the web application, provide a CLI that drives milestone 3 in a loop:
 
 ```text
-$ go run ./cmd/zork ...
+$ go run ./cmd/zorkplay games/zork1/zork1-r119-880429.z3
 > look
 West of House
 ...
 ```
 
-This separates VM debugging from web debugging.
+Rebuild the machine every turn even here. It separates engine and state debugging from web debugging, and exercises the production path rather than a shortcut.
 
-### Milestone 5 — Snapshot/restore
+### Milestone 5 — State round trip
 
-- Serialize the running VM.
-- Destroy it.
-- Restore a new VM from the snapshot.
-- Continue playing without observable loss of state.
+- Persist `Result.State` between turns.
+- Prove that a rebuilt-and-restored machine continues identically to one kept alive.
+- Prove that a failed turn leaves the previous state intact.
 
 This milestone is required before server-side gameplay.
 
-### Milestone 6 — SQLite persistence
+### Milestone 6 — Rendering
+
+- Word wrap to the target width without corrupting the story's whitespace.
+- Render the status line from `Result.StatusLine`.
+- Decide how `Result.UpperWindow` is presented.
+- Escape story output on the way into HTML.
+
+### Milestone 7 — SQLite persistence
 
 - Integrate ZombieZen SQLite.
 - Add migrations.
-- Store active game state.
+- Store active game state and its story key.
 - Persist after every input cycle.
+- Add the per-session lock and the conditional write.
 - Verify restart/resume behavior.
 
-### Milestone 7 — Authentication
+### Milestone 8 — Authentication
 
 - Users.
 - Password hashing.
@@ -1043,7 +1111,7 @@ This milestone is required before server-side gameplay.
 - Secure sessions.
 - Authorization boundaries.
 
-### Milestone 8 — Web terminal
+### Milestone 9 — Web terminal
 
 - Server-rendered templates.
 - HTMX command submission.
@@ -1052,7 +1120,7 @@ This milestone is required before server-side gameplay.
 - Automatic focus.
 - Mobile-friendly layout.
 
-### Milestone 9 — Terminal polish
+### Milestone 10 — Terminal polish
 
 - Alpine command history.
 - green/amber preference;
@@ -1060,13 +1128,15 @@ This milestone is required before server-side gameplay.
 - reduced-motion handling;
 - keyboard behavior.
 
-### Milestone 10 — Named saves
+### Milestone 11 — Named saves
 
-- Implement host handling of Version 3 save/restore.
+- Intercept `SAVE` and `RESTORE` before the engine sees them.
 - Add named saves.
 - Add restore selector.
 - Add deletion/overwrite semantics.
-- Consider Quetzal export/import as a later enhancement.
+- Consider save export/import for other interpreters as a later enhancement.
+
+The interception decision (section 13.1) is needed before milestone 9, because it shapes the terminal UI. Only the storage work waits for this milestone.
 
 ---
 
@@ -1075,18 +1145,18 @@ This milestone is required before server-side gameplay.
 The first useful release is complete when:
 
 1. A user can create or receive an account and log in.
-2. The server runs the actual Zork I Z-machine Version 3 story.
+2. The server runs the actual Zork story files through the pinned engine.
 3. The user can play through the browser.
-4. Game execution occurs in Go on the server.
+4. Game execution occurs in Go on the server, one machine per request.
 5. The browser uses server-rendered HTML, HTMX, and limited Alpine.js.
 6. The UI convincingly evokes an early-1980s terminal.
 7. The user's state is automatically stored in SQLite after commands.
 8. The user can log out, restart the Go server, log back in, and continue from the same state.
 9. Different users have completely independent game states.
 10. Concurrent/stale requests cannot silently overwrite newer game state.
-11. A VM failure cannot destroy the last known-good game state.
+11. An execution failure, cancellation or timeout cannot destroy the last known-good game state.
 12. The application can be deployed as a Go executable with a SQLite database and minimal supporting configuration.
-13. Core VM and persistence behavior is covered by automated tests.
+13. The turn cycle, rendering and persistence behavior are covered by automated tests.
 
 ---
 
@@ -1094,8 +1164,12 @@ The first useful release is complete when:
 
 Do not allow these to expand the initial project:
 
-- general Z-machine v4+ support;
+- reimplementing or forking the Z-machine engine;
+- games beyond Zork I, II and III, whose compatibility is unproven and untested;
+- Z-machine versions other than 3;
 - arbitrary user-uploaded story files;
+- save import/export or interoperability with other interpreters;
+- reaching into the saved-state format for any purpose;
 - multiplayer Zork;
 - shared game worlds;
 - SPA architecture;
@@ -1127,23 +1201,25 @@ The central boundary should remain:
                        |
              +---------+---------+
              |                   |
-          input/events       snapshots
+        one line of input   Result.State
              |                   |
              v                   v
         +-----------------------------+
-        |       Z-machine v3          |
+        |   zmachine (external pkg)   |
         |                             |
         | no HTTP                     |
         | no SQLite                   |
         | no users                    |
         | no HTML                     |
-        | no HTMX                     |
-        | no Alpine                   |
+        | no filesystem               |
+        | no terminal                 |
         +-----------------------------+
                        |
                        v
-                    Zork I
+                games/*.z3
 ```
+
+Everything above that line is this project's work — rendering, wrapping, the status bar, saving, users, transport, storage, concurrency. Everything below it is the engine's, and belongs upstream.
 
 And externally:
 
@@ -1160,7 +1236,7 @@ HTML + HTMX + Alpine
    game service
       /      \
      v        v
-Z-machine   SQLite
+ zmachine   SQLite
             ZombieZen
 ```
 
