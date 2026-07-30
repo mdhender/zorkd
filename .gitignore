@@ -1,0 +1,17 @@
+*~
+*.swp
+
+# IDE, agents
+.idea/
+
+# build files
+
+# references
+
+# Story files and saves a maintainer fetched for local use.
+# These are Z-machine versions this repository cannot ship, because no story of those
+# versions carries a redistribution licence.
+# Everything here stays out of git except the instructions to fetch them.
+/stories/local/*
+!/stories/local/README.md
+!/stories/local/fetch.sh
