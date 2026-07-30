@@ -253,7 +253,11 @@ Alpine must not become a second application architecture.
 
 Where licensing permits, use `//go:embed` for templates and static application assets so deployment remains simple.
 
-Whether the Zork story images are embedded or supplied at deployment time must be isolated behind story-loading code and documented clearly.
+**The Zork story images are embedded.** They ship inside the executable, so deployment is the binary and its database, and a server can never come up missing the game it was meant to serve. The three files are ~267 KB together, which is not a reason to make deployment harder.
+
+The `games` package owns the embedding and exposes the images as data. Nothing else names a story file, so a story loaded from elsewhere later is a change to one package.
+
+Do not add a configuration path that reads story files from disk unless something concrete requires it. Licensing already permits shipping these three; a story that cannot be shipped is a different problem, and `games/local/` is where a maintainer keeps one.
 
 ---
 
@@ -829,7 +833,8 @@ A starting structure:
 │   ├── httpserver/
 │   ├── session/
 │   └── terminal/      # word wrapping, status line, transcript rendering
-├── games/
+├── games/             # embedded story images + their licenses
+│   ├── games.go
 │   ├── zork1/
 │   ├── zork2/
 │   └── zork3/
@@ -939,7 +944,6 @@ ZORK_ADDR
 ZORK_DATABASE
 ZORK_BASE_URL
 ZORK_SESSION_SECRET
-ZORK_GAMES_DIR        # only when stories are not embedded
 ZORK_TURN_TIMEOUT     # context deadline per turn
 ZORK_INSTRUCTION_LIMIT
 ```
@@ -953,6 +957,8 @@ Secrets must not be committed to the repository.
 ## 20. Testing Strategy
 
 The engine has its own suite — 715 tests under `-race`, six fuzz targets, and a differential comparison against dfrotz on Zork I. Do not duplicate it. Test the host.
+
+The project has no CI, by decision. The test gate runs when a human runs it, which makes it the committer's job rather than a machine's.
 
 ### 20.1 Game service tests
 

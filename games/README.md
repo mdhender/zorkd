@@ -1,14 +1,17 @@
 # Z-Machine Story Files
 
 Z-machine story files the server serves.
-Nothing here is part of the package.
+
+`games.go` embeds them into the executable with `go:embed` and is the only place a story
+file is named; the `.z3` files and their licenses are third-party works and are not covered
+by this repository's license.
 
 Save files are stored separately.
 
 ## Story files
 
 Story files are served to users.
-The package never writes or updates them.
+The server never writes or updates them.
 
 Each game has its own directory holding the story file and the license that governs it:
 

@@ -218,7 +218,7 @@ filename rather than only in the bytes. Do not rename these to bare `zorkN.z3`.
 
 Each story file has its own `LICENSE` beside it. See `games/README.md`.
 
-They may be embedded with `go:embed`.
+They are embedded with `go:embed` by the `games` package, which is the only place a story file is named. Deployment is then the binary and its database.
 
 Treat these bytes as immutable.
 
@@ -638,6 +638,8 @@ A change is complete when:
 * no unrelated complexity was introduced.
 
 For changes on the execution path, test against at least one real Zork story whenever practical.
+
+**This project has no CI, by decision.** The gate above runs only when a human runs it, so run it — `gofmt`, `go build ./...`, `go vet ./...`, `go test ./...` — before every commit. Do not propose adding CI.
 
 ## Guiding Question
 

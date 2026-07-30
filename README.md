@@ -147,14 +147,16 @@ The ZIL source trees and historical build systems are **not dependencies of this
 
 ## Embedded Games
 
-The story files may be embedded into the Go executable using `go:embed`.
-
-For example:
+The story files are embedded into the executable by the `games` package:
 
 ```go
-//go:embed games/zork1/zork1-r119-880429.z3
+//go:embed zork1/zork1-r119-880429.z3
 var zork1 []byte
 ```
+
+Deployment is therefore the binary and its database, and a server cannot come up missing the game it was meant to serve. The three images are about 267 KB together.
+
+`games` is the only package that names a story file. Everything downstream takes them as data.
 
 Story images are immutable application assets. `zmachine.LoadStory` copies the image it is given and validates the whole thing before returning, so the embedded bytes are never at risk from execution.
 
