@@ -197,6 +197,61 @@ The application needs nothing in return. Session cookies are marked `Secure` by 
 
 `-insecure-cookies` has no place in any of this.
 
+### nginx
+
+```nginx
+server {
+    listen      80;
+    listen      [::]:80;
+    server_name zork.example.com;
+    return 301  https://$host$request_uri;
+}
+
+server {
+    listen      443 ssl;
+    listen      [::]:443 ssl;
+    http2       on;                      # nginx 1.25.1+; older: listen 443 ssl http2
+    server_name zork.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/zork.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/zork.example.com/privkey.pem;
+
+    ssl_protocols       TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_tickets off;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+
+    # A command is one line, and the server bounds a form body at 16 KiB itself.
+    client_max_body_size 32k;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        # Required. nginx defaults Host to $proxy_host — "127.0.0.1:8080" —
+        # which makes every Origin/Host comparison a mismatch.
+        proxy_set_header Host $http_host;
+
+        # Not read today. Rate limiting per source address needs them.
+        proxy_set_header X-Real-IP       $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+Three things about that configuration are worth saying rather than leaving to be inferred.
+
+**`proxy_set_header Host $http_host;` is not optional.** nginx's default is `Host $proxy_host`, so without this line the server sees `Host: 127.0.0.1:8080` while `Origin` says `https://zork.example.com`, and the fallback comparison rejects every post from a browser old enough to lack `Sec-Fetch-Site`. `$http_host` rather than `$host` because `net/http` compares `url.Parse(origin).Host` against `r.Host` verbatim, and `$host` drops the port — identical for 443, wrong the moment the site is served on any other port.
+
+Passing the client's `Host` through means a catch-all server block should refuse unknown host names rather than forward them. Little is at risk here, since the application builds only relative URLs, but a default server that accepts anything is a habit worth not forming.
+
+**`Origin` and `Sec-Fetch-Site` need no configuration.** nginx forwards them already. The hazard is a hardening directive that stops it — `proxy_pass_request_headers off`, or a hand-written allow-list of headers to forward. Do not add one.
+
+**`/static/` stays with the application.** The stylesheet, the scripts and the vendored libraries are embedded in the binary, so there is no directory for nginx to serve them from and no `location /static/` block to write.
+
+`proxy_read_timeout` needs no adjustment: its 60-second default already outlasts a turn, which is bounded at five seconds by the game service and thirty by the server's own write timeout.
+
 ## The Web Terminal
 
 The game page is text on a dark screen: a status bar, a scrolling transcript, and a command line with the cursor beside the prompt.
