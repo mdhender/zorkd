@@ -198,6 +198,14 @@ The bytes are opaque. This project does not parse them, edit them, or reach into
 
 A game session is therefore durable without a long-running interpreter process.
 
+## Storage
+
+SQLite, in WAL mode, through `zombiezen.com/go/sqlite`. Access is explicit and small — statements are written out, and the schema is built by versioned migrations embedded from `migrations/`, tracked in SQLite's own `user_version`. There is no ORM.
+
+The state is written whole and read back whole. No column is derived from it, the schema will not accept a live game with nothing stored for it, and `NULL` means the story halted rather than the state going missing.
+
+Every turn's write is conditional on the version it read, so a turn that lost a race is refused instead of overwriting the one that won.
+
 ## Session Model
 
 A session identifies:

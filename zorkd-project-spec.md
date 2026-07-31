@@ -846,7 +846,7 @@ A starting structure:
 │   ├── zork1/
 │   ├── zork2/
 │   └── zork3/
-├── migrations/
+├── migrations/        # embedded, versioned SQL; a package like games/
 ├── web/
 │   ├── static/
 │   └── templates/
