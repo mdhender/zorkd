@@ -44,6 +44,10 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// missingDatabaseError names the file and the remedy. It carries no package
+// prefix of its own: this is command-level code whose result goes straight to
+// main's "zorkd: %v" printer, so a "database:" prefix here would render as the
+// stuttering "zorkd: database:".
 func missingDatabaseError(path string) error {
-	return fmt.Errorf("database: %s: no database here. Run \"zorkd init -database %s\" to make one.", path, path)
+	return fmt.Errorf("%s: no database here. Run \"zorkd init -database %s\" to make one.", path, path)
 }

@@ -79,9 +79,12 @@ func TestCommandsRefuseMissingDatabase(t *testing.T) {
 			path := filepath.Join(root, "zorkd.db")
 			err := tt.run(path)
 			abs, _ := filepath.Abs(path)
-			want := "no database here. Run \"zorkd init -database " + abs + "\" to make one."
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Fatalf("error = %v, want remedy %q", err, want)
+			// The whole message, asserted exactly: the remedy carries no package
+			// prefix of its own, so main renders it as "zorkd: <path>: no
+			// database here..." rather than a stuttering "zorkd: database:".
+			want := abs + ": no database here. Run \"zorkd init -database " + abs + "\" to make one."
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want exactly %q", err, want)
 			}
 			entries, readErr := os.ReadDir(root)
 			if readErr != nil {
