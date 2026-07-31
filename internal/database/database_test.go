@@ -2,7 +2,12 @@ package database
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"zombiezen.com/go/sqlite"
@@ -128,8 +133,152 @@ func TestOpenIsRepeatable(t *testing.T) {
 	}
 }
 
-func TestOpenReportsABadPath(t *testing.T) {
-	if _, err := Open(context.Background(), filepath.Join(t.TempDir(), "no-such-dir", "zorkd.db")); err == nil {
-		t.Fatal("Open() = nil error, want failure")
+// A good path creates the database file, and nothing but the database file.
+func TestOpenCreatesTheDatabaseFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "zorkd.db")
+
+	db := openAt(t, path)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", path, err)
 	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("mode = %s, want a regular file", info.Mode())
+	}
+
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("migrations.All() error = %v", err)
+	}
+	version, err := db.SchemaVersion(context.Background())
+	if err != nil {
+		t.Fatalf("SchemaVersion() error = %v", err)
+	}
+	if want := all[len(all)-1].Version; version != want {
+		t.Errorf("schema version = %d, want %d", version, want)
+	}
+}
+
+// Open must report a path it cannot use and leave the filesystem alone. The
+// second half is the one that matters: an os.MkdirAll added later for
+// convenience would leave the error assertions passing.
+func TestOpenRejectsABadPathAndCreatesNothing(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, root string) string
+		want  error
+	}{
+		{
+			name: "parent directory missing",
+			setup: func(t *testing.T, root string) string {
+				return filepath.Join(root, "missing", "zorkd.db")
+			},
+			want: ErrParentMissing,
+		},
+		{
+			name: "two parent directories missing",
+			setup: func(t *testing.T, root string) string {
+				return filepath.Join(root, "missing", "deeper", "zorkd.db")
+			},
+			want: ErrParentMissing,
+		},
+		{
+			name: "parent is a regular file",
+			setup: func(t *testing.T, root string) string {
+				t.Helper()
+
+				parent := filepath.Join(root, "not-a-directory")
+				if err := os.WriteFile(parent, []byte("this is a file\n"), 0o600); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
+				return filepath.Join(parent, "zorkd.db")
+			},
+			want: ErrParentNotDirectory,
+		},
+		{
+			name: "path is an existing directory",
+			setup: func(t *testing.T, root string) string {
+				t.Helper()
+
+				path := filepath.Join(root, "zorkd.db")
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatalf("Mkdir() error = %v", err)
+				}
+				return path
+			},
+			want: ErrNotRegularFile,
+		},
+	}
+
+	// Collected across the subtests, which run in order, so the four cases can
+	// be compared with each other rather than only with a sentinel.
+	messages := make(map[string]string, len(tests))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := tt.setup(t, root)
+			before := treeOf(t, root)
+
+			db, err := Open(context.Background(), path)
+			if err == nil {
+				t.Errorf("Open(%s) = nil error, want failure", path)
+				if err := db.Close(); err != nil {
+					t.Errorf("Close() error = %v", err)
+				}
+			} else {
+				if !errors.Is(err, tt.want) {
+					t.Errorf("Open(%s) error = %v, want %v", path, err, tt.want)
+				}
+				if abs, _ := filepath.Abs(path); !strings.Contains(err.Error(), abs) {
+					t.Errorf("Open(%s) error = %q, want it to name %s", path, err, abs)
+				}
+				messages[tt.name] = err.Error()
+			}
+
+			if after := treeOf(t, root); !slices.Equal(before, after) {
+				t.Errorf("Open(%s) changed the filesystem:\nbefore %v\nafter  %v", path, before, after)
+			}
+		})
+	}
+
+	// The four messages must stay tellable apart, or they collapse back into
+	// the single "unable to open database file" this replaced.
+	seen := make(map[string]string, len(messages))
+	for name, message := range messages {
+		if other, ok := seen[message]; ok {
+			t.Errorf("%q and %q report the same error %q", name, other, message)
+		}
+		seen[message] = name
+	}
+	if len(messages) != len(tests) {
+		t.Errorf("collected %d messages, want %d", len(messages), len(tests))
+	}
+}
+
+// treeOf lists every path under root, so a test can assert that a failed Open
+// left the directory exactly as it found it.
+func treeOf(t *testing.T, root string) []string {
+	t.Helper()
+
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, rel+":"+d.Type().String())
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(%s) error = %v", root, err)
+	}
+
+	slices.Sort(paths)
+	return paths
 }
