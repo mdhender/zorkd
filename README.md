@@ -325,6 +325,8 @@ The screen is stored beside the state and written in the same update: a bounded 
 
 Players sign in with an email address and a password. Passwords are hashed with Argon2id and stored in the PHC string form, so the cost parameters and the salt travel inside each hash and can be raised later without invalidating what is already there. An unknown address and a wrong password are the same answer, and both cost the same work — a faster "no" for addresses with no account is a way of asking the server who its users are.
 
+That work is what makes logging in and registering worth limiting: both are open to anyone who can reach the server, and both spend a full verification per request. Each is bounded by a token bucket on the source address and a second on the submitted address, since limiting one end leaves the other open. Attempts past the burst are refused with `429` and a `Retry-After`, on the form the player was already looking at, and in words that read the same whether or not the address has an account. Behind a reverse proxy the source is the proxy's address until this is taught which hop to trust.
+
 A logged-in browser carries a cookie holding 256 bits of randomness: `HttpOnly`, `Secure`, `SameSite=Lax`, and expiring. The database keeps only the SHA-256 of that value, so a copy of it cannot be used to log in as anybody, and logging out deletes the row rather than merely asking the browser to forget.
 
 Every game belongs to an account. The owner is part of the query rather than a check made afterwards — a game identifier is not a capability, and one taken from somebody else's browser reads as a game that does not exist, because saying "not yours" would confirm that it does.

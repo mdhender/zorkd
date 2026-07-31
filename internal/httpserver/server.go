@@ -34,6 +34,11 @@ type Server struct {
 
 	templates *templates
 	static    http.Handler
+
+	// The unauthenticated routes are limited; everything else is behind a
+	// session, which is a bound of its own.
+	logins        *attemptLimit
+	registrations *attemptLimit
 }
 
 // New returns a Server. Every dependency is required except the logger, which
@@ -66,6 +71,14 @@ func New(games *game.Service, accounts *auth.Service, sessions *session.Manager,
 		logger:    logger,
 		templates: parsed,
 		static:    http.StripPrefix("/static/", http.FileServerFS(web.Static())),
+		logins: &attemptLimit{
+			source: newLimiter(loginBurst, loginRefill, maxTrackedKeys),
+			email:  newLimiter(loginEmailBurst, loginEmailRefill, maxTrackedKeys),
+		},
+		registrations: &attemptLimit{
+			source: newLimiter(registerBurst, registerRefill, maxTrackedKeys),
+			email:  newLimiter(registerEmailBurst, registerEmailRefill, maxTrackedKeys),
+		},
 	}, nil
 }
 

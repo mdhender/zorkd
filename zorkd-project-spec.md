@@ -521,11 +521,13 @@ Normalize email addresses consistently for lookup.
 
 Passwords must be stored using an appropriate password hashing algorithm. Never store plaintext passwords.
 
-**The decision.** Argon2id, from `golang.org/x/crypto/argon2`, at OWASP's current parameters: 19 MiB of memory, two passes, one lane, a 16-byte salt and a 32-byte key. Hashes are stored in the PHC string form, so the algorithm, its parameters and the salt travel inside the hash and raising the cost later does not invalidate what is already stored.
+**The decision.** Argon2id, from `golang.org/x/crypto/argon2`, at OWASP's 9 MiB, four passes, one lane, with a 16-byte salt and a 32-byte key. That is one of the two pairings OWASP recommends as equivalent work; it is preferred here over 19 MiB and two passes because logging in and registering are unauthenticated, so the memory one request can make the server allocate is a number a stranger chooses. Hashes are stored in the PHC string form, so the algorithm, its parameters and the salt travel inside the hash and changing the cost later does not invalidate what is already stored.
 
 Normalization is a trim and a lowercase, applied by `auth.NormalizeEmail` on both registration and login. Only a bare address is accepted; a display form such as `Player <player@example.com>` is refused rather than silently reduced.
 
 An unknown address and a wrong password are the same answer, `ErrInvalidCredentials`, and both cost a password verification. An early return would make a failed login measurably faster for addresses with no account, which is a way of asking the server who its users are.
+
+Because that cost is unavoidable by design, and because both routes are open to anyone who can reach the server, `POST /login` and `POST /register` are rate limited in `internal/httpserver` — a token bucket per source address and a second per submitted address, since limiting one end leaves the other open. A refused attempt is answered with `429` and `Retry-After` on the route's own form, in words that read the same whether or not the address has an account.
 
 ### 8.2 Sessions
 
