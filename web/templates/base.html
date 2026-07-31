@@ -4,8 +4,32 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{block "title" .}}Zork{{end}}</title>
+<meta name="color-scheme" content="dark">
+{{/*
+Inline, in the head, and deliberately so: the phosphor and the CRT setting are
+attributes on the root element, and reading them from a deferred file would show
+a green screen to somebody who chose amber before switching it. This is the one
+script that has to run before the first paint.
+*/}}
+<script>
+    (function () {
+        try {
+            var phosphor = localStorage.getItem("zorkd.phosphor");
+            if (phosphor) {
+                document.documentElement.dataset.phosphor = phosphor;
+            }
+            if (localStorage.getItem("zorkd.crt") === "on") {
+                document.documentElement.dataset.crt = "on";
+            }
+        } catch (e) {
+            // Private browsing, or storage turned off. The defaults are fine.
+        }
+    })();
+</script>
 <link rel="stylesheet" href="/static/terminal.css">
 <script src="/static/vendor/htmx.min.js" defer></script>
+<script src="/static/terminal.js" defer></script>
+<script src="/static/vendor/alpine.min.js" defer></script>
 </head>
 <body>
 <main class="screen">

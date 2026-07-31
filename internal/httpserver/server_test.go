@@ -419,10 +419,55 @@ func TestCrossOriginPostIsRefused(t *testing.T) {
 	}
 }
 
+// The polish is presentation, and it is all delivered by the page rather than
+// asked for from anybody else.
+func TestTerminalPolishIsOnThePage(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	page := c.get("/games/" + id)
+	body := page.Body.String()
+
+	// Command history, scoped to this game.
+	for _, want := range []string{`x-data="prompt('` + id + `')"`, "earlier()", "later()"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the command line is missing %q", want)
+		}
+	}
+
+	// The screen preferences, on the game page and on the lobby.
+	for _, page := range []*httptest.ResponseRecorder{page, c.get("/")} {
+		for _, want := range []string{`x-data="preferences"`, "amber", "scanlines"} {
+			if !strings.Contains(page.Body.String(), want) {
+				t.Errorf("a page is missing the %q preference", want)
+			}
+		}
+	}
+
+	// The preference is applied before the first paint, or a player who chose
+	// amber watches the screen flash green on every page.
+	if !strings.Contains(body, "zorkd.phosphor") {
+		t.Error("the page does not apply the stored phosphor before painting")
+	}
+
+	// Nothing is fetched from anywhere but this server.
+	for _, forbidden := range []string{"//unpkg.com", "//cdn.", "https://"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("the page reaches outside this server: %q", forbidden)
+		}
+	}
+}
+
 func TestStaticAssetsAreServed(t *testing.T) {
 	c := newTestClient(t)
 
-	for _, path := range []string{"/static/terminal.css", "/static/vendor/htmx.min.js"} {
+	for _, path := range []string{
+		"/static/terminal.css",
+		"/static/terminal.js",
+		"/static/vendor/htmx.min.js",
+		"/static/vendor/alpine.min.js",
+	} {
 		t.Run(path, func(t *testing.T) {
 			w := c.get(path)
 			if w.Code != http.StatusOK {

@@ -263,19 +263,57 @@ button.linklike:hover {
     white-space: nowrap;
 }
 
+/* ---- screen preferences ----------------------------------------------- */
+
+.settings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75ch;
+    align-items: baseline;
+    margin-top: 0.75rem;
+    color: var(--phosphor-dim);
+    font-size: 0.85rem;
+}
+
+.settings .label {
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.settings button {
+    border-color: var(--phosphor-dim);
+    padding: 0.15rem 1ch;
+    font-size: inherit;
+    color: var(--phosphor-dim);
+}
+
+.settings button[aria-pressed="true"] {
+    background: var(--phosphor);
+    color: var(--background);
+    border-color: var(--phosphor);
+}
+
+/* Until Alpine has bound the pressed states, the row would show every button
+   looking unset. Hide it rather than show a wrong answer; with no JavaScript at
+   all the preferences cannot be changed anyway. */
+[x-cloak] {
+    display: none;
+}
+
 /* ---- decoration ------------------------------------------------------- */
 
 /*
- * A restrained glow, and nothing that costs legibility. Everything below is
- * decoration: with it disabled the application looks plainer and works the
- * same.
+ * A restrained glow. It is static rather than animated, so it is not something
+ * reduced motion asks about — but it is something contrast asks about, and it
+ * goes when more contrast is wanted.
  */
-@media (prefers-reduced-motion: no-preference) {
-    .transcript,
-    .prompt .caret {
-        text-shadow: 0 0 4px color-mix(in srgb, var(--phosphor) 45%, transparent);
-    }
+.transcript,
+.upper-window,
+.prompt .caret {
+    text-shadow: 0 0 4px color-mix(in srgb, var(--phosphor) 45%, transparent);
+}
 
+@media (prefers-reduced-motion: no-preference) {
     .prompt .caret {
         animation: blink 1.2s step-end infinite;
     }
@@ -287,10 +325,45 @@ button.linklike:hover {
     }
 }
 
+/*
+ * Scanlines, off by default and asked for by name.
+ *
+ * They are laid over the page and never over the meaning of it: the lines are
+ * dark on dark, there is no animation to them, and nothing on the screen is
+ * said only by the way it looks. Turning them off leaves a plainer terminal
+ * that works identically.
+ */
+:root[data-crt="on"] body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    pointer-events: none;
+    background:
+        repeating-linear-gradient(
+            to bottom,
+            rgba(0, 0, 0, 0.18) 0,
+            rgba(0, 0, 0, 0.18) 1px,
+            transparent 1px,
+            transparent 3px
+        ),
+        radial-gradient(
+            ellipse at center,
+            transparent 55%,
+            rgba(0, 0, 0, 0.35) 100%
+        );
+}
+
 @media (prefers-contrast: more) {
     .transcript,
+    .upper-window,
     .prompt .caret {
         text-shadow: none;
+    }
+
+    /* Scanlines take contrast away, which is the one thing this must not do. */
+    :root[data-crt="on"] body::after {
+        display: none;
     }
 }
 

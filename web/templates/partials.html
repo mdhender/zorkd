@@ -7,6 +7,23 @@ Story output reaches these templates as data and is escaped on the way in. It is
 never markup, whatever it happens to contain.
 */}}
 
+{{/*
+Screen preferences. They are this browser's, kept in its own storage: a phosphor
+colour is a matter of taste and not something the server has an opinion about.
+
+Each is a real button with a pressed state, and each says what it does in words,
+so the choice is reachable by keyboard and nothing here is communicated only by
+the way the screen looks.
+*/}}
+{{define "settings"}}<div class="settings" x-data="preferences" x-cloak>
+<span class="label" id="phosphor-label">Phosphor</span>
+<span role="group" aria-labelledby="phosphor-label">
+<button type="button" @click="choose('green')" :aria-pressed="phosphor === 'green'">green</button>
+<button type="button" @click="choose('amber')" :aria-pressed="phosphor === 'amber'">amber</button>
+</span>
+<button type="button" @click="toggleCRT()" :aria-pressed="crt">scanlines</button>
+</div>{{end}}
+
 {{define "status-fields"}}{{if .Available}}<span class="room">{{.Name}}</span>{{if .TimeGame}}<span class="clock">Time: {{.Time}}</span>{{else}}<span class="score">Score: {{.Score}}</span><span class="moves">Moves: {{.Moves}}</span>{{end}}{{end}}{{end}}
 
 {{define "status-bar"}}<div class="status-bar" id="status-bar">{{template "status-fields" .}}</div>{{end}}

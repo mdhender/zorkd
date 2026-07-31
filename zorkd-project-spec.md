@@ -1201,6 +1201,14 @@ The page a browser loads and the fragment a turn returns are rendered from the s
 - reduced-motion handling;
 - keyboard behavior.
 
+**The decisions.** The history is browsed the way a shell browses one, is kept per game in this browser's own storage, and is bounded. The line being written is set aside when browsing starts, so arrowing up to look at something and back down returns what was half-typed. A turn that failed keeps the line so it can be sent again without being typed again. None of it is game state (section 12.3).
+
+The phosphor and the CRT setting are attributes on the root element, written to browser storage and applied again by a small inline script in the page head — the one script that has to run before the first paint, or a player who chose amber watches the screen flash green on every page.
+
+Reduced motion gates the one animation there is, the blinking cursor. It does not gate the glow, which is static and not something reduced motion asks about; more contrast removes both the glow and the scanlines, since taking contrast away is the one thing decoration must not do.
+
+Typing anywhere means typing at the prompt, but only when nothing else has focus, so the transcript can still be read with the keyboard and the preference buttons still answer to the space bar. Escape clears the line.
+
 ### Milestone 11 — Named saves
 
 - Intercept `SAVE` and `RESTORE` before the engine sees them.

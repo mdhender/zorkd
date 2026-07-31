@@ -186,6 +186,10 @@ The transcript is wrapped by CSS rather than by inserted newlines, so what is st
 
 A command is an ordinary HTML form enhanced with HTMX. The response is the fragment that turn added to the screen, plus the status bar swapped out of band. Without JavaScript the same form posts normally and the browser is sent back to a page that redraws from the same stored transcript — the server is the source of truth either way, which is also what makes a refresh work.
 
+Typing anywhere on the page types at the prompt, and the arrow keys browse the commands already given — per game, in this browser's own storage, and bounded. That history is a convenience local to the browser and never confused with game state.
+
+The screen comes in green or amber, with optional scanlines, remembered by the browser and applied before the first paint so a chosen amber screen never flashes green. The only animation is the blinking cursor, and it stops when the system asks for reduced motion; asking for more contrast removes the glow and the scanlines, because taking contrast away is the one thing decoration must not do. With every effect disabled the terminal is plainer and works identically.
+
 ## Playing From the Terminal
 
 `cmd/zorkplay` drives the turn cycle without a web server, which keeps engine and state debugging separate from web debugging:

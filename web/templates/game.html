@@ -10,6 +10,12 @@
   {{if .Halted}}
   <p class="ended" role="status">The story has ended. <a href="/">Start another game.</a></p>
   {{else}}
+  {{/*
+  Without JavaScript this is an ordinary form: it posts, and the server sends
+  the browser back to a page that redraws from the same stored transcript. htmx
+  makes it a turn instead, and Alpine adds the command history — which is a
+  convenience local to this browser and not part of the game.
+  */}}
   <form class="prompt"
         method="post"
         action="/games/{{.ID}}/input"
@@ -17,9 +23,10 @@
         hx-target="#transcript"
         hx-swap="beforeend"
         hx-disabled-elt="find input, find button"
-        hx-on::before-request="document.getElementById('notice').textContent = ''"
-        hx-on::after-request="this.reset(); this.querySelector('input').focus()"
-        hx-on::response-error="document.getElementById('notice').textContent = 'The server could not play that turn. Nothing was lost — try again.'">
+        x-data="prompt('{{.ID}}')"
+        @htmx:before-request="starting()"
+        @htmx:after-request="finished($event)"
+        @htmx:response-error="failed()">
     <label class="visually-hidden" for="command">Command</label>
     <span class="caret" aria-hidden="true">&gt;</span>
     <input type="text"
@@ -31,7 +38,12 @@
            autocorrect="off"
            spellcheck="false"
            enterkeyhint="send"
-           autofocus>
+           autofocus
+           x-ref="command"
+           x-model="command"
+           @keydown.arrow-up.prevent="earlier()"
+           @keydown.arrow-down.prevent="later()"
+           @keydown.escape="command = ''">
     <button type="submit">Enter</button>
   </form>
   {{end}}
@@ -42,7 +54,7 @@
     <a href="/">Games</a>
     <form method="post" action="/logout"><button type="submit" class="linklike">Log out</button></form>
   </div>
-</div>
 
-<script src="/static/terminal.js" defer></script>
+  {{template "settings"}}
+</div>
 {{end}}
