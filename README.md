@@ -164,6 +164,20 @@ Each story is loaded once, at startup, and the resulting `*Story` is shared by e
 
 Sessions are keyed by a SHA-256 over the story image. Release and serial identify an *edition* rather than a file, and early Version 3 stories carry no checksum at all.
 
+## Playing From the Terminal
+
+`cmd/zorkplay` drives the turn cycle without a web server, which keeps engine and state debugging separate from web debugging:
+
+```text
+$ go run ./cmd/zorkplay zork1
+$ go run ./cmd/zorkplay -list
+$ go run ./cmd/zorkplay -seed 1988 zork2
+```
+
+The game defaults to `zork1` and is chosen by library id, never by path — `games` is the only place a story file is named. The machine is rebuilt from the story and the previous turn's state on every command, exactly as the server will do it, so a bug that only appears when a machine is thrown away appears here too. The session's state lives in memory; durable persistence is the server's job.
+
+`-seed` makes a session reproducible, which is what makes a reported turn worth reporting. `-timeout` and `-limit` set the two bounds on a turn, and `-v` sends engine diagnostics to stderr.
+
 ## Session State
 
 Between turns, a session is a blob of bytes and the identity of the story they belong to.

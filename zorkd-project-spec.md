@@ -820,7 +820,9 @@ A starting structure:
 ```text
 .
 ├── cmd/
-│   └── zorkd/
+│   ├── zorkd/
+│   │   └── main.go
+│   └── zorkplay/      # terminal driver for the turn cycle; no HTTP
 │       └── main.go
 ├── internal/
 │   ├── auth/
@@ -1077,11 +1079,13 @@ New machine, stored state, one command, machine discarded. This is the shape eve
 Before building the web application, provide a CLI that drives milestone 3 in a loop:
 
 ```text
-$ go run ./cmd/zorkplay games/zork1/zork1-r119-880429.z3
+$ go run ./cmd/zorkplay zork1
 > look
 West of House
 ...
 ```
+
+The story is selected by its library id rather than by a path: the images are embedded, and `games` is the only place a story file is named.
 
 Rebuild the machine every turn even here. It separates engine and state debugging from web debugging, and exercises the production path rather than a shortcut.
 
