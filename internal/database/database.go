@@ -6,7 +6,11 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -30,13 +34,45 @@ type DB struct {
 	closed sync.Once
 }
 
-// Open opens the database at path, creating it if necessary, and applies any
-// migrations it has not seen.
+// Errors reported by [Open] for a path it will not open.
+//
+// They are distinct because SQLite is not: a missing parent directory, a parent
+// that is a file, and a path that is a directory all reach the caller as one
+// "unable to open database file", which says nothing about what to fix.
+var (
+	// ErrParentMissing reports that the directory that would hold the database
+	// does not exist. Open does not create it; see [Open].
+	ErrParentMissing = errors.New("parent directory does not exist")
+
+	// ErrParentNotDirectory reports that the path that would hold the database
+	// exists but is not a directory.
+	ErrParentNotDirectory = errors.New("parent path is not a directory")
+
+	// ErrNotRegularFile reports that the database path itself exists and is
+	// something other than a regular file.
+	ErrNotRegularFile = errors.New("path is not a regular file")
+)
+
+// Open opens the database at path, creating the file if necessary, and applies
+// any migrations it has not seen.
 //
 // The path is a file. An in-memory database would give each pooled connection
 // its own empty copy, which is not a database at all.
+//
+// The path is resolved with [filepath.Abs] and its directory must already
+// exist. Open creates a database file and nothing else: a missing directory is
+// reported rather than built. The path to the database is usually relative and
+// comes from a flag, so a server started in the wrong directory would otherwise
+// quietly construct a tree nobody asked for and serve an empty store out of it,
+// which is the failure this check exists to prevent. Do not add an os.MkdirAll
+// here, however tidy it would make a deployment script.
 func Open(ctx context.Context, path string) (*DB, error) {
-	pool, err := sqlitex.NewPool(path, sqlitex.PoolOptions{
+	abs, err := checkPath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := sqlitex.NewPool(abs, sqlitex.PoolOptions{
 		// The default flags open read-write, create, and WAL.
 		PrepareConn: func(conn *sqlite.Conn) error {
 			conn.SetBusyTimeout(busyTimeout)
@@ -44,7 +80,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("database: open %s: %w", path, err)
+		return nil, fmt.Errorf("database: open %s: %w", abs, err)
 	}
 
 	db := &DB{pool: pool}
@@ -54,6 +90,46 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 
 	return db, nil
+}
+
+// checkPath resolves path and reports, distinctly, every reason the database
+// there cannot be opened.
+//
+// It creates nothing. In particular it must never create the parent directory:
+// see [Open] for why that is deliberate.
+//
+// The absolute path is in every message because the path given is usually
+// relative, and a relative path in an error names a file only to whoever knows
+// the working directory the server was started in.
+func checkPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("database: %s: resolve path: %w", path, err)
+	}
+
+	dir := filepath.Dir(abs)
+	switch info, err := os.Stat(dir); {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf("database: %s: %s: %w", abs, dir, ErrParentMissing)
+	case err != nil:
+		return "", fmt.Errorf("database: %s: parent %s: %w", abs, dir, err)
+	case !info.IsDir():
+		return "", fmt.Errorf("database: %s: %s: %w", abs, dir, ErrParentNotDirectory)
+	}
+
+	switch info, err := os.Stat(abs); {
+	case errors.Is(err, fs.ErrNotExist):
+		// Nothing there yet, which is the first run. SQLite opens with
+		// SQLITE_OPEN_CREATE and makes the file, never the directory.
+	case err != nil:
+		return "", fmt.Errorf("database: %s: %w", abs, err)
+	case info.IsDir():
+		return "", fmt.Errorf("database: %s: %w: it is a directory", abs, ErrNotRegularFile)
+	case !info.Mode().IsRegular():
+		return "", fmt.Errorf("database: %s: %w: mode is %s", abs, ErrNotRegularFile, info.Mode())
+	}
+
+	return abs, nil
 }
 
 // Close releases every connection in the pool.

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -103,7 +104,17 @@ func run(args []string, stderr io.Writer) error {
 		return err
 	}
 
-	db, err := database.Open(ctx, *dbPath)
+	// The absolute path is logged because -database defaults to a relative one:
+	// a server started in the wrong directory opens a different, empty database
+	// and otherwise says nothing about it until somebody wonders where their
+	// account went.
+	dbFile, err := filepath.Abs(*dbPath)
+	if err != nil {
+		return fmt.Errorf("database %s: %w", *dbPath, err)
+	}
+	logger.Info("opening the database", "path", dbFile)
+
+	db, err := database.Open(ctx, dbFile)
 	if err != nil {
 		return err
 	}
