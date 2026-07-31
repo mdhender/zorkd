@@ -187,12 +187,20 @@ func TestProbeSkipsTicksAndReadersDoNotBlock(t *testing.T) {
 }
 
 func TestProbeCancellationReturns(t *testing.T) {
-	_, _, _, cancel, done := startTestProbe(t)
+	probe, clock, pinger, cancel, done := startTestProbe(t)
+	pinger.replies <- pingReply{}
+	healthy := awaitStatus(t, probe, HealthHealthy)
+	clock.ticks <- clock.Now()
+	<-pinger.started
+
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Run did not return after cancellation")
+	}
+	if got := probe.Snapshot(); got != healthy {
+		t.Fatalf("snapshot after cancellation = %+v, want unchanged %+v", got, healthy)
 	}
 }
 

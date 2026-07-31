@@ -139,6 +139,12 @@ func (p *Probe) Run(ctx context.Context) {
 		case result := <-results:
 			cancel()
 			inFlight = false
+			// Cancelling the server also cancels the in-flight Ping. If its
+			// result wins the select race with ctx.Done, shutdown is still not
+			// a database failure and must not change the recorded health.
+			if ctx.Err() != nil {
+				return
+			}
 			previous := p.state.Load()
 			next := &HealthSnapshot{
 				RecordedAt:             result.finished,
