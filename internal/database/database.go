@@ -53,27 +53,38 @@ var (
 	ErrNotRegularFile = errors.New("path is not a regular file")
 )
 
-// Open opens the database at path, creating the file if necessary, and applies
-// any migrations it has not seen.
+// Open opens the database at path and applies any migrations it has not seen.
+// When create is true, Open creates a new file and refuses to replace or open
+// one that already exists. When create is false, the file must already exist.
 //
 // The path is a file. An in-memory database would give each pooled connection
 // its own empty copy, which is not a database at all.
 //
 // The path is resolved with [filepath.Abs] and its directory must already
-// exist. Open creates a database file and nothing else: a missing directory is
-// reported rather than built. The path to the database is usually relative and
-// comes from a flag, so a server started in the wrong directory would otherwise
-// quietly construct a tree nobody asked for and serve an empty store out of it,
-// which is the failure this check exists to prevent. Do not add an os.MkdirAll
-// here, however tidy it would make a deployment script.
-func Open(ctx context.Context, path string) (*DB, error) {
-	abs, err := checkPath(path)
+// exist. In creation mode Open creates a database file and nothing else: a
+// missing directory is reported rather than built. The path to the database is
+// usually relative and comes from a flag, so a server started in the wrong
+// directory would otherwise quietly construct a tree nobody asked for and
+// serve an empty store out of it, which is the failure this check exists to
+// prevent. Do not add an os.MkdirAll here, however tidy it would make a
+// deployment script.
+func Open(ctx context.Context, path string, create bool) (*DB, error) {
+	abs, err := checkPath(path, create)
 	if err != nil {
 		return nil, err
 	}
+	if create {
+		file, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("database: create %s: %w", abs, err)
+		}
+		if err := file.Close(); err != nil {
+			return nil, fmt.Errorf("database: create %s: close: %w", abs, err)
+		}
+	}
 
 	pool, err := sqlitex.NewPool(abs, sqlitex.PoolOptions{
-		// The default flags open read-write, create, and WAL.
+		Flags: sqlite.OpenReadWrite | sqlite.OpenWAL,
 		PrepareConn: func(conn *sqlite.Conn) error {
 			conn.SetBusyTimeout(busyTimeout)
 			return sqlitex.ExecuteTransient(conn, "PRAGMA foreign_keys = ON;", nil)
@@ -101,7 +112,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 // The absolute path is in every message because the path given is usually
 // relative, and a relative path in an error names a file only to whoever knows
 // the working directory the server was started in.
-func checkPath(path string) (string, error) {
+func checkPath(path string, create bool) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("database: %s: resolve path: %w", path, err)
@@ -119,14 +130,17 @@ func checkPath(path string) (string, error) {
 
 	switch info, err := os.Stat(abs); {
 	case errors.Is(err, fs.ErrNotExist):
-		// Nothing there yet, which is the first run. SQLite opens with
-		// SQLITE_OPEN_CREATE and makes the file, never the directory.
+		if !create {
+			return "", fmt.Errorf("database: %s: %w", abs, fs.ErrNotExist)
+		}
 	case err != nil:
 		return "", fmt.Errorf("database: %s: %w", abs, err)
 	case info.IsDir():
 		return "", fmt.Errorf("database: %s: %w: it is a directory", abs, ErrNotRegularFile)
 	case !info.Mode().IsRegular():
 		return "", fmt.Errorf("database: %s: %w: mode is %s", abs, ErrNotRegularFile, info.Mode())
+	case create:
+		return "", fmt.Errorf("database: %s: %w", abs, fs.ErrExist)
 	}
 
 	return abs, nil
