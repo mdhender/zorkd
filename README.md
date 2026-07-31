@@ -175,6 +175,15 @@ $ go run ./cmd/zorkd -insecure-cookies        # local development over plain HTT
 
 `ZORK_ADDR`, `ZORK_DATABASE`, `ZORK_TURN_TIMEOUT` and `ZORK_INSTRUCTION_LIMIT` set the same things; a flag wins over the environment, and a setting that cannot be read stops the server rather than quietly becoming the default.
 
+Registration is by invitation, and an invitation is issued from the command line rather than through an admin page the server does not have:
+
+```text
+$ go run ./cmd/zorkd invite -database zorkd.db -base-url https://zork.example.com player@example.com
+https://zork.example.com/register?invite=RiQ0…
+```
+
+`ZORK_BASE_URL` sets `-base-url`. That printed line is the only place the token ever exists: the database holds only its SHA-256, so a lost invitation is reissued rather than looked up.
+
 The server needs nothing else. The story files, the templates and the assets are embedded, the database is created on first run, and the schema is brought up to date when it opens.
 
 `-insecure-cookies` drops the `Secure` attribute so a session survives plain HTTP. It exists for local development, and a deployment that serves over HTTPS must not use it — which is why the safe setting is the default and the unsafe one has to be asked for by name.
@@ -387,7 +396,11 @@ The screen is stored beside the state and written in the same update: a bounded 
 
 Players sign in with an email address and a password. Passwords are hashed with Argon2id and stored in the PHC string form, so the cost parameters and the salt travel inside each hash and can be raised later without invalidating what is already there. An unknown address and a wrong password are the same answer, and both cost the same work — a faster "no" for addresses with no account is a way of asking the server who its users are.
 
-That work is what makes logging in and registering worth limiting: both are open to anyone who can reach the server, and both spend a full verification per request. Each is bounded by a token bucket on the source address and a second on the submitted address, since limiting one end leaves the other open. Attempts past the burst are refused with `429` and a `Retry-After`, on the form the player was already looking at, and in words that read the same whether or not the address has an account. Behind a reverse proxy the source is the proxy's address until this is taught which hop to trust.
+Registration is closed. An account is created only by somebody holding an invitation, and only under the address that invitation was issued for. The token is 256 bits from `crypto/rand`; the database keeps only its SHA-256, and the address beside it in plaintext — an address is low-entropy and enumerable, so hashing it would look like protection and provide almost none, and `users.email` holds the same address plainly in the next table. An invitation expires after 48 hours, is good once, and both halves of registration check it: the form is not drawn without one, and the `POST` checks the token and the address again rather than trusting that the form was drawn. Redeeming the invitation and creating the account are one transaction, so two registrations racing on one token produce exactly one account. Every unusable invitation — unknown, expired, already spent, or for a different address — gets the same answer.
+
+That work is what makes logging in and registering worth limiting: both are reachable by anyone who can reach the server, and logging in spends a full verification per request. Each is bounded by a token bucket on the source address and a second on the submitted address, since limiting one end leaves the other open. Attempts past the burst are refused with `429` and a `Retry-After`, on the form the player was already looking at, and in words that read the same whether or not the address has an account. Behind a reverse proxy the source is the proxy's address until this is taught which hop to trust. There is less behind the limit on registration than there was — the invitation is checked before anything is hashed — but the route is still open to a stranger, so the limit stays.
+
+Invitations are issued with `zorkd invite` and collected by the same periodic sweep that collects expired sessions — one goroutine and one interval rather than two that drift apart. Expired ones go, and spent ones go 48 hours after they were used, so a player reloading their own registration link is not told the invitation is unknown. The sweep logs a count and never a token or an address.
 
 A logged-in browser carries a cookie holding 256 bits of randomness: `HttpOnly`, `Secure`, `SameSite=Lax`, and expiring. The database keeps only the SHA-256 of that value, so a copy of it cannot be used to log in as anybody, and logging out deletes the row rather than merely asking the browser to forget.
 

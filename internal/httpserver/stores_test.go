@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mdhender/zorkd/internal/auth"
+	"github.com/mdhender/zorkd/internal/invite"
 	"github.com/mdhender/zorkd/internal/session"
 )
 
@@ -108,6 +109,78 @@ func (s *sessionStore) DeleteExpiredSessions(_ context.Context, before time.Time
 	for key, stored := range s.sessions {
 		if stored.ExpiresAt.Before(before) {
 			delete(s.sessions, key)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+// invitationStore is the in-memory half of the registration gate.
+//
+// It writes accounts into the account store because redeeming an invitation and
+// creating the account it was issued for are one operation: everything Redeem
+// does happens under one lock, which is this store's version of the transaction
+// the SQLite one takes.
+type invitationStore struct {
+	mu          sync.Mutex
+	accounts    *accountStore
+	invitations map[string]invite.Invitation
+}
+
+func newInvitationStore(accounts *accountStore) *invitationStore {
+	return &invitationStore{accounts: accounts, invitations: make(map[string]invite.Invitation)}
+}
+
+func (i *invitationStore) CreateInvitation(_ context.Context, tokenHash []byte, invitation invite.Invitation) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.invitations[string(tokenHash)] = invitation
+	return nil
+}
+
+func (i *invitationStore) InvitationByToken(_ context.Context, tokenHash []byte) (invite.Invitation, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	stored, ok := i.invitations[string(tokenHash)]
+	if !ok {
+		return invite.Invitation{}, invite.ErrNotInvited
+	}
+	return stored, nil
+}
+
+func (i *invitationStore) Redeem(ctx context.Context, tokenHash []byte, at time.Time, record auth.Record) (auth.User, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	stored, ok := i.invitations[string(tokenHash)]
+	if !ok || !stored.RedeemedAt.IsZero() || !at.Before(stored.ExpiresAt) || stored.Email != record.Email {
+		return auth.User{}, invite.ErrNotInvited
+	}
+
+	user, err := i.accounts.CreateUser(ctx, record)
+	if err != nil {
+		return auth.User{}, err
+	}
+
+	stored.RedeemedAt = at
+	stored.UserID = user.ID
+	i.invitations[string(tokenHash)] = stored
+
+	return user, nil
+}
+
+func (i *invitationStore) DeleteSpentInvitations(_ context.Context, expiredBefore, redeemedBefore time.Time) (int, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	removed := 0
+	for key, stored := range i.invitations {
+		spent := stored.RedeemedAt.IsZero() && stored.ExpiresAt.Before(expiredBefore)
+		spent = spent || (!stored.RedeemedAt.IsZero() && stored.RedeemedAt.Before(redeemedBefore))
+		if spent {
+			delete(i.invitations, key)
 			removed++
 		}
 	}

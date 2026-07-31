@@ -451,6 +451,18 @@ CREATE TABLE auth_sessions (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE invitations (
+    id          INTEGER PRIMARY KEY,
+    token_hash  BLOB NOT NULL UNIQUE,       -- SHA-256 of the token, never the token
+    email       TEXT NOT NULL,              -- normalized, as users.email is
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    redeemed_at TEXT,
+    user_id     INTEGER,                    -- the account it created, once redeemed
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE games (
     id          INTEGER PRIMARY KEY,
     user_id     INTEGER NOT NULL,
@@ -527,7 +539,29 @@ Normalization is a trim and a lowercase, applied by `auth.NormalizeEmail` on bot
 
 An unknown address and a wrong password are the same answer, `ErrInvalidCredentials`, and both cost a password verification. An early return would make a failed login measurably faster for addresses with no account, which is a way of asking the server who its users are.
 
-Because that cost is unavoidable by design, and because both routes are open to anyone who can reach the server, `POST /login` and `POST /register` are rate limited in `internal/httpserver` — a token bucket per source address and a second per submitted address, since limiting one end leaves the other open. A refused attempt is answered with `429` and `Retry-After` on the route's own form, in words that read the same whether or not the address has an account.
+Because that cost is unavoidable by design, and because both routes are reachable by anyone who can reach the server, `POST /login` and `POST /register` are rate limited in `internal/httpserver` — a token bucket per source address and a second per submitted address, since limiting one end leaves the other open. A refused attempt is answered with `429` and `Retry-After` on the route's own form, in words that read the same whether or not the address has an account.
+
+Section 8.1.1 shrinks the registration half of that: an invitation is checked before the password is hashed, so the Argon2id cost on `POST /register` is no longer reachable by an unauthenticated stranger. The limit stays, because the route is still reachable by one; there is simply much less behind it.
+
+### 8.1.1 Registration is by invitation
+
+Registration is not open. An account is created only by somebody holding an invitation, and only under the address that invitation was issued for. This is the other half of section 22's user who can "create **or receive**" an account.
+
+**The decision.** `internal/invite`, over an `invitations` table (section 7.2).
+
+The token is 256 bits from `crypto/rand`, `base64.RawURLEncoding` — the same shape the session cookie uses, for the same reason: the value exists in the link handed to a person and nowhere else, and the database holds only its SHA-256. An unsalted, fast hash is right here and would be wrong for a password, because the token is randomness rather than something a person chose; that is also why the lookup is an ordinary indexed `WHERE token_hash = ?` rather than a constant-time compare.
+
+The address is stored **in plaintext**, in the form `auth.NormalizeEmail` produces. The reasoning that makes hashing right for the token is what makes it wrong here: an address is low-entropy and enumerable, so its SHA-256 is reversible with a word list; `users.email` is already plaintext beside it; and the form has to be able to say which address the invitation is for. What hashing would buy — a dump not revealing who was invited and never signed up — is answered better by deleting those rows than by obscuring them.
+
+An invitation expires after `invite.DefaultInvitationTTL`, 48 hours, and is good once. `GET /register?invite=<token>` draws the form only for a token that is currently redeemable and a refusal otherwise; the form shows the invited address without inviting it to be changed, and carries the token as a hidden field. The `POST` checks the token and the address again and does not trust that the `GET` happened. Redeeming the invitation and creating the account are one transaction, so two registrations racing on one token produce exactly one account — the same reasoning as the count-and-write in `Sessions.CreateSave`.
+
+Every unusable invitation gets one answer, whether it is unknown, expired, already redeemed, or issued for a different address. Tokens are unguessable, so distinguishing them gives an attacker nothing — and it gives a legitimate holder of a spent link nothing either.
+
+Expired invitations, and redeemed ones past a 48-hour grace period, are collected by the periodic sweep in `cmd/zorkd` that also collects expired sessions: one goroutine and one interval, so the two cannot drift apart. Redeemed rows are kept for the grace period so that a player reloading their own registration link is not told the invitation is unknown. The sweep logs a count and never a token or an address.
+
+There is no admin surface and this should not grow one. Invitations are issued by `zorkd invite -database zorkd.db player@example.com`, which writes a row and prints the link once; that printed line is the only place the plaintext token ever exists, so a lost invitation is reissued rather than looked up. The address is validated there, so a typo is caught while somebody is still looking at it.
+
+A token in a URL is not private: it reaches browser history, and any referrer or proxy in front of the server. That is acceptable for a single-use, expiring invitation and would not be for a credential. `logRequests` records `r.URL.Path` and not the query string, so the token stays out of the log.
 
 ### 8.2 Sessions
 
@@ -851,7 +885,7 @@ DELETE /game/saves/{id}
 **What was built.** A player has more than one game — three stories, and more than one game of each — so the game routes are plural and carry an identifier:
 
 ```text
-GET   /login          GET  /register
+GET   /login          GET  /register?invite=<token>
 POST  /login          POST /register
 POST  /logout
 
@@ -867,6 +901,8 @@ POST  /games/{id}/saves/{save}/restore     go back to one
 POST  /games/{id}/saves/{save}/delete      remove one
 GET   /static/...
 ```
+
+The registration routes are gated by an invitation (section 8.1.1). `GET /register` draws the form only for a token that is currently redeemable and answers `403` with a refusal otherwise, and `POST /register` checks the token and the address again rather than trusting that the `GET` happened.
 
 `RESTART` does have a route, which is a change from what this section first said. The engine implements the opcode, but the screen and the move count beside the state are the application's, so the command is intercepted and answered here (section 13.5). Typing it asks for confirmation; the confirmation posts to `/games/{id}/restart`, which is a `POST` because a form is all a browser without JavaScript can send. The confirmation is drawn on the game page rather than a page of its own — `GET /games/{id}?prompt=restart` — so the game about to be thrown away is still on the screen while the question is asked.
 
@@ -906,6 +942,7 @@ A starting structure:
 │   │   ├── command.go # SAVE/RESTORE/RESTART interception
 │   │   └── errors.go  # engine error classification
 │   ├── httpserver/    # routes, handlers, views; does not import zmachine
+│   ├── invite/        # invitations to register; no HTTP
 │   ├── session/       # browser sessions; game sessions live in internal/game
 │   └── terminal/      # the plain-text terminal: wrapping and the status bar
 ├── games/             # embedded story images + their licenses
@@ -955,6 +992,7 @@ The build process should make it possible to omit the story image from the repos
 At minimum:
 
 - hash passwords using a modern password-hashing scheme;
+- gate registration on an invitation, bound to one address and good once (section 8.1.1);
 - use cryptographically secure session identifiers;
 - use secure cookies;
 - enforce CSRF protection appropriate to the chosen session/HTMX design;
@@ -1003,8 +1041,11 @@ Do not log:
 
 - passwords;
 - session tokens;
+- invitation tokens, or the addresses they were issued for;
 - password hashes;
 - complete database snapshots.
+
+`logRequests` records `r.URL.Path` and not the query string, which is what keeps an invitation token — it arrives on one — out of the log. The periodic sweep reports a count and never a row.
 
 Player commands should not be logged by default. They may contain arbitrary user-entered text.
 
@@ -1253,7 +1294,7 @@ Export and import for other interpreters remain a later decision and were not bu
 
 The first useful release is complete when:
 
-1. A user can create or receive an account and log in.
+1. A user can receive an account and log in. Both halves are built: an invitation is issued with `zorkd invite`, and the person holding it creates their own account from it (section 8.1.1). Registration without one is refused.
 2. The server runs the actual Zork story files through the pinned engine.
 3. The user can play through the browser.
 4. Game execution occurs in Go on the server, one machine per request.

@@ -415,15 +415,18 @@ func TestLoginRefusalDoesNotSayWhetherTheAccountExists(t *testing.T) {
 func TestRegistrationIsLimitedPerSource(t *testing.T) {
 	c := newTestClient(t)
 
-	// Passwords too short to store: refused before anything is hashed, and each
-	// attempt still costs a token, which is what is being asserted.
+	// No invitation: refused before anything is hashed, and each attempt still
+	// costs a token, which is what is being asserted. There is much less behind
+	// the limit than there was — the invitation is checked first, so the
+	// Argon2id cost is no longer reachable here — but the route is still open to
+	// anyone who can reach the server, so the limit stays.
 	for i := 0; i < registerBurst; i++ {
 		w := c.post("/register", url.Values{
 			"email":    {"player" + strconv.Itoa(i) + "@example.com"},
 			"password": {"short"},
 		})
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("attempt %d = %d, want %d", i, w.Code, http.StatusBadRequest)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("attempt %d = %d, want %d", i, w.Code, http.StatusForbidden)
 		}
 	}
 
@@ -446,8 +449,8 @@ func TestRegistrationIsLimitedPerEmail(t *testing.T) {
 			"email":    {"player@example.com"},
 			"password": {"short"},
 		})
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("attempt %d = %d, want %d", i, w.Code, http.StatusBadRequest)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("attempt %d = %d, want %d", i, w.Code, http.StatusForbidden)
 		}
 	}
 

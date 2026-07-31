@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mdhender/zorkd/internal/auth"
+	"github.com/mdhender/zorkd/internal/invite"
 	"github.com/mdhender/zorkd/internal/session"
 )
 
@@ -14,11 +15,28 @@ import (
 //
 // The email is echoed back so a failed attempt does not make the player type it
 // again. The password never is.
+//
+// Invite and Invited are the registration half. Registration is by invitation,
+// so the page is either a form carrying the token it arrived with or a refusal
+// with no form on it at all: "supply a token to submit" means the form is not
+// reachable without one.
 type credentialsView struct {
 	Email       string
 	Error       string
 	MinPassword int
+
+	Invite  string
+	Invited bool
 }
+
+// notInvited is the one answer every unusable invitation gets, whether it is
+// unknown, expired, already redeemed, or issued for a different address.
+//
+// Telling them apart gives an attacker nothing, because the token is not
+// something anyone finds by probing — but it gives a legitimate holder of a
+// spent link nothing either, so it is decided here rather than by whichever
+// check happened to fail first.
+const notInvited = "That invitation cannot be used. It may have expired or already been used, or it may have been issued for a different address."
 
 func (s *Server) showLogin(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.sessions.UserID(r.Context(), r); err == nil {
@@ -70,13 +88,36 @@ func (s *Server) logIn(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// showRegister draws the form only for an invitation that can still be
+// redeemed, and a refusal for anything else.
+//
+// The check here is a courtesy so that nobody fills in a form that was never
+// going to be accepted. It is not the gate: register checks again, and does not
+// trust that this ran.
 func (s *Server) showRegister(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.sessions.UserID(r.Context(), r); err == nil {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	s.renderPage(w, r, "register.html", http.StatusOK,
-		credentialsView{MinPassword: auth.MinPasswordLength})
+
+	token := r.URL.Query().Get("invite")
+
+	invitation, err := s.invitations.Invited(r.Context(), token)
+	if err != nil {
+		if !errors.Is(err, invite.ErrNotInvited) {
+			s.logger.ErrorContext(r.Context(), "reading an invitation failed", "error", err)
+		}
+		s.renderPage(w, r, "register.html", http.StatusForbidden,
+			credentialsView{MinPassword: auth.MinPasswordLength, Error: notInvited})
+		return
+	}
+
+	s.renderPage(w, r, "register.html", http.StatusOK, credentialsView{
+		Email:       invitation.Email,
+		MinPassword: auth.MinPasswordLength,
+		Invite:      token,
+		Invited:     true,
+	})
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
@@ -89,22 +130,33 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view.Email = r.PostFormValue("email")
+	view.Invite = r.PostFormValue("invite")
+	view.Invited = true
 
 	// Registration cannot hide that an address is taken — the form has to say
 	// so — but a stranger walking a list runs out of attempts long before the
 	// answers add up to anything, and bulk account creation runs out with them.
+	//
+	// There is much less behind this than there was: Redeem refuses a request
+	// carrying no usable invitation before it hashes anything, so the Argon2id
+	// cost on this route is no longer reachable by an unauthenticated stranger.
+	// The limit stays because the route is still open to one.
 	if retry, ok := s.registrations.allow(r, view.Email); !ok {
 		s.tooManyAttempts(w, r, "register.html", retry, view)
 		return
 	}
 
-	account, err := s.accounts.Register(r.Context(), view.Email, r.PostFormValue("password"))
+	account, err := s.invitations.Redeem(r.Context(), view.Invite, view.Email, r.PostFormValue("password"))
 	if err != nil {
 		switch {
+		case errors.Is(err, invite.ErrNotInvited):
+			// The form goes with the invitation: there is nothing here to
+			// resubmit, so the refusal is drawn without one.
+			s.renderPage(w, r, "register.html", http.StatusForbidden,
+				credentialsView{MinPassword: auth.MinPasswordLength, Error: notInvited})
+			return
 		case errors.Is(err, auth.ErrEmailTaken):
 			view.Error = "There is already an account for that address."
-		case errors.Is(err, auth.ErrInvalidEmail):
-			view.Error = "That does not look like an email address."
 		case errors.Is(err, auth.ErrWeakPassword):
 			view.Error = "That password is not long enough."
 		default:

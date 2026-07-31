@@ -156,6 +156,9 @@ func (db *DB) Users() *Users { return &Users{db: db} }
 // AuthSessions returns the store of browser sessions.
 func (db *DB) AuthSessions() *AuthSessions { return &AuthSessions{db: db} }
 
+// Invitations returns the store of invitations to register.
+func (db *DB) Invitations() *Invitations { return &Invitations{db: db} }
+
 // conn takes a connection from the pool and returns it along with the function
 // that puts it back.
 func (db *DB) conn(ctx context.Context) (*sqlite.Conn, func(), error) {

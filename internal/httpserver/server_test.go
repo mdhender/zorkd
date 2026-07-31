@@ -1,7 +1,9 @@
 package httpserver
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/mdhender/zorkd/internal/auth"
 	"github.com/mdhender/zorkd/internal/game"
+	"github.com/mdhender/zorkd/internal/invite"
 	"github.com/mdhender/zorkd/internal/session"
 )
 
@@ -25,6 +28,13 @@ type client struct {
 	handler http.Handler
 	addr    string
 	cookies []*http.Cookie
+
+	// invitations is the server's own service, so a test can issue the
+	// invitation registration now requires without an admin route to do it
+	// through. The store beneath it is here too, for the invitations no service
+	// would issue: one that has already expired.
+	invitations *invite.Service
+	invited     *invitationStore
 }
 
 // nextAddr hands out a distinct source address. Limiters do not outlive the
@@ -38,6 +48,14 @@ func nextAddr() string {
 func newTestClient(t *testing.T) *client {
 	t.Helper()
 
+	return newLoggingTestClient(t, nil)
+}
+
+// newLoggingTestClient is the same server with somewhere for its log to go, for
+// the tests that care about what it wrote.
+func newLoggingTestClient(t *testing.T, logger *slog.Logger) *client {
+	t.Helper()
+
 	library, err := game.Embedded()
 	if err != nil {
 		t.Fatalf("Embedded() error = %v", err)
@@ -46,7 +64,8 @@ func newTestClient(t *testing.T) *client {
 	if err != nil {
 		t.Fatalf("game.NewService() error = %v", err)
 	}
-	accounts, err := auth.NewService(newAccountStore())
+	users := newAccountStore()
+	accounts, err := auth.NewService(users)
 	if err != nil {
 		t.Fatalf("auth.NewService() error = %v", err)
 	}
@@ -55,19 +74,48 @@ func newTestClient(t *testing.T) *client {
 	if err != nil {
 		t.Fatalf("session.NewManager() error = %v", err)
 	}
+	invited := newInvitationStore(users)
+	invitations, err := invite.NewService(invited)
+	if err != nil {
+		t.Fatalf("invite.NewService() error = %v", err)
+	}
 
-	server, err := New(games, accounts, sessions, library, nil)
+	server, err := New(games, accounts, sessions, invitations, library, logger)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	return &client{t: t, handler: server.Handler(), addr: nextAddr()}
+	return &client{
+		t:           t,
+		handler:     server.Handler(),
+		addr:        nextAddr(),
+		invitations: invitations,
+		invited:     invited,
+	}
 }
 
 // otherBrowser is a second browser on the same server: its own cookies, its own
 // address, and no session.
 func (c *client) otherBrowser() *client {
-	return &client{t: c.t, handler: c.handler, addr: nextAddr()}
+	return &client{
+		t:           c.t,
+		handler:     c.handler,
+		addr:        nextAddr(),
+		invitations: c.invitations,
+		invited:     c.invited,
+	}
+}
+
+// invite issues an invitation for the address and returns the token, the way
+// `zorkd invite` would.
+func (c *client) invite(email string) string {
+	c.t.Helper()
+
+	token, err := c.invitations.Create(context.Background(), email)
+	if err != nil {
+		c.t.Fatalf("Create(%q) error = %v", email, err)
+	}
+	return token
 }
 
 func (c *client) do(r *http.Request) *httptest.ResponseRecorder {
@@ -126,11 +174,20 @@ func (c *client) postHTMX(path string, form url.Values) *httptest.ResponseRecord
 	return c.do(r)
 }
 
-// register creates an account and leaves the client logged in.
+// register issues an invitation, redeems it, and leaves the client logged in.
+//
+// Registration is by invitation, so every account a test needs starts with one.
 func (c *client) register(email, password string) {
 	c.t.Helper()
 
-	w := c.post("/register", url.Values{"email": {email}, "password": {password}})
+	c.registerWith(c.invite(email), email, password)
+}
+
+// registerWith redeems an invitation the caller already holds.
+func (c *client) registerWith(token, email, password string) {
+	c.t.Helper()
+
+	w := c.post("/register", url.Values{"invite": {token}, "email": {email}, "password": {password}})
 	if w.Code != http.StatusSeeOther {
 		c.t.Fatalf("POST /register = %d, want %d: %s", w.Code, http.StatusSeeOther, w.Body.String())
 	}
@@ -660,6 +717,9 @@ func TestLoginAndLogout(t *testing.T) {
 	}
 }
 
+// The refusals a holder of a good invitation can still earn. They are the
+// player's own to fix, so they are reported rather than folded into the one
+// answer an unusable invitation gets.
 func TestRegisterReportsBadInput(t *testing.T) {
 	c := newTestClient(t)
 	c.register("player@example.com", "a good long password")
@@ -673,21 +733,28 @@ func TestRegisterReportsBadInput(t *testing.T) {
 		want     string
 	}{
 		{"taken", "player@example.com", "a good long password", "already an account"},
-		{"not an address", "player", "a good long password", "does not look like an email"},
 		{"short password", "other@example.com", "short", "not long enough"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w := fresh.post("/register", url.Values{"email": {tt.email}, "password": {tt.password}})
+			token := fresh.invite(tt.email)
+
+			w := fresh.post("/register", url.Values{
+				"invite": {token}, "email": {tt.email}, "password": {tt.password}})
 			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+				t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusBadRequest, w.Body.String())
 			}
 			contains(t, w, tt.want)
 
-			// The address is offered back; the password never is.
-			if tt.email != "" && !strings.Contains(w.Body.String(), tt.email) {
+			// The address is offered back, and so is the invitation, so the form
+			// that comes back is one that can be submitted again. The password
+			// never is.
+			if !strings.Contains(w.Body.String(), tt.email) {
 				t.Error("the address was not echoed back into the form")
+			}
+			if !strings.Contains(w.Body.String(), token) {
+				t.Error("the invitation was not carried back into the form")
 			}
 			if strings.Contains(w.Body.String(), tt.password) {
 				t.Error("the password was echoed back into the page")
@@ -802,7 +869,8 @@ func TestNewRequiresItsParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("game.NewService() error = %v", err)
 	}
-	accounts, err := auth.NewService(newAccountStore())
+	users := newAccountStore()
+	accounts, err := auth.NewService(users)
 	if err != nil {
 		t.Fatalf("auth.NewService() error = %v", err)
 	}
@@ -810,23 +878,29 @@ func TestNewRequiresItsParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session.NewManager() error = %v", err)
 	}
+	invitations, err := invite.NewService(newInvitationStore(users))
+	if err != nil {
+		t.Fatalf("invite.NewService() error = %v", err)
+	}
 
 	tests := []struct {
-		name     string
-		games    *game.Service
-		accounts *auth.Service
-		sessions *session.Manager
-		library  *game.Library
+		name        string
+		games       *game.Service
+		accounts    *auth.Service
+		sessions    *session.Manager
+		invitations *invite.Service
+		library     *game.Library
 	}{
-		{name: "no game service", accounts: accounts, sessions: sessions, library: library},
-		{name: "no auth service", games: games, sessions: sessions, library: library},
-		{name: "no session manager", games: games, accounts: accounts, library: library},
-		{name: "no library", games: games, accounts: accounts, sessions: sessions},
+		{name: "no game service", accounts: accounts, sessions: sessions, invitations: invitations, library: library},
+		{name: "no auth service", games: games, sessions: sessions, invitations: invitations, library: library},
+		{name: "no session manager", games: games, accounts: accounts, invitations: invitations, library: library},
+		{name: "no invitation service", games: games, accounts: accounts, sessions: sessions, library: library},
+		{name: "no library", games: games, accounts: accounts, sessions: sessions, invitations: invitations},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := New(tt.games, tt.accounts, tt.sessions, tt.library, nil); err == nil {
+			if _, err := New(tt.games, tt.accounts, tt.sessions, tt.invitations, tt.library, nil); err == nil {
 				t.Fatal("New() = nil error, want failure")
 			}
 		})
