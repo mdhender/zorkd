@@ -13,6 +13,7 @@ import (
 
 	"github.com/mdhender/zorkd/internal/auth"
 	"github.com/mdhender/zorkd/internal/game"
+	"github.com/mdhender/zorkd/internal/invite"
 	"github.com/mdhender/zorkd/internal/session"
 	"github.com/mdhender/zorkd/web"
 )
@@ -26,11 +27,12 @@ const MaxFormBytes = 16 << 10
 
 // A Server routes requests to the services beneath it.
 type Server struct {
-	games    *game.Service
-	accounts *auth.Service
-	sessions *session.Manager
-	library  *game.Library
-	logger   *slog.Logger
+	games       *game.Service
+	accounts    *auth.Service
+	sessions    *session.Manager
+	invitations *invite.Service
+	library     *game.Library
+	logger      *slog.Logger
 
 	templates *templates
 	static    http.Handler
@@ -43,7 +45,7 @@ type Server struct {
 
 // New returns a Server. Every dependency is required except the logger, which
 // defaults to discarding.
-func New(games *game.Service, accounts *auth.Service, sessions *session.Manager, library *game.Library, logger *slog.Logger) (*Server, error) {
+func New(games *game.Service, accounts *auth.Service, sessions *session.Manager, invitations *invite.Service, library *game.Library, logger *slog.Logger) (*Server, error) {
 	switch {
 	case games == nil:
 		return nil, errors.New("httpserver: nil game service")
@@ -51,6 +53,8 @@ func New(games *game.Service, accounts *auth.Service, sessions *session.Manager,
 		return nil, errors.New("httpserver: nil auth service")
 	case sessions == nil:
 		return nil, errors.New("httpserver: nil session manager")
+	case invitations == nil:
+		return nil, errors.New("httpserver: nil invitation service")
 	case library == nil:
 		return nil, errors.New("httpserver: nil library")
 	}
@@ -64,13 +68,14 @@ func New(games *game.Service, accounts *auth.Service, sessions *session.Manager,
 	}
 
 	return &Server{
-		games:     games,
-		accounts:  accounts,
-		sessions:  sessions,
-		library:   library,
-		logger:    logger,
-		templates: parsed,
-		static:    http.StripPrefix("/static/", http.FileServerFS(web.Static())),
+		games:       games,
+		accounts:    accounts,
+		sessions:    sessions,
+		invitations: invitations,
+		library:     library,
+		logger:      logger,
+		templates:   parsed,
+		static:      http.StripPrefix("/static/", http.FileServerFS(web.Static())),
 		logins: &attemptLimit{
 			source: newLimiter(loginBurst, loginRefill, maxTrackedKeys),
 			email:  newLimiter(loginEmailBurst, loginEmailRefill, maxTrackedKeys),
@@ -186,6 +191,11 @@ func parseForm(w http.ResponseWriter, r *http.Request) error {
 //
 // Player commands are deliberately absent: they are arbitrary text a person
 // typed, and a log is not the place for them.
+//
+// The route is r.URL.Path and not r.URL.RequestURI, so the query string never
+// reaches the log. An invitation token arrives on one — GET /register?invite=…
+// — and a token and an email address are both things this project has decided
+// not to write down.
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}

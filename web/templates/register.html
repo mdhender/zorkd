@@ -6,18 +6,26 @@
 
   {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 
+  {{if .Invited}}
   <form method="post" action="/register" class="credentials">
+    <input type="hidden" name="invite" value="{{.Invite}}">
+
     <label for="email">Email</label>
-    <input type="email" id="email" name="email" value="{{.Email}}"
-           autocomplete="username" autocapitalize="off" spellcheck="false" required autofocus>
+    <input type="email" id="email" name="email" value="{{.Email}}" readonly
+           autocomplete="username" autocapitalize="off" spellcheck="false" required>
+    <p class="hint">The invitation is for that address.</p>
 
     <label for="password">Password</label>
     <input type="password" id="password" name="password" autocomplete="new-password"
-           minlength="{{.MinPassword}}" required>
+           minlength="{{.MinPassword}}" required autofocus>
     <p class="hint">At least {{.MinPassword}} characters. Length is all that is asked for.</p>
 
     <button type="submit">Register</button>
   </form>
+  {{else}}
+  <p>Registration is by invitation. An invitation is a link, it is for one
+     address, and it can be used once.</p>
+  {{end}}
 
   <p>Already registered? <a href="/login">Log in</a>.</p>
 </div>

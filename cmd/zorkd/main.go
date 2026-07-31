@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/mdhender/zorkd/internal/database"
 	"github.com/mdhender/zorkd/internal/game"
 	"github.com/mdhender/zorkd/internal/httpserver"
+	"github.com/mdhender/zorkd/internal/invite"
 	"github.com/mdhender/zorkd/internal/session"
 )
 
@@ -47,7 +49,25 @@ func main() {
 	}
 }
 
+// run dispatches a subcommand, or serves when there is none.
+//
+// A subcommand is a first argument that is not a flag, so `zorkd -addr ...`
+// still means what it always did and nothing about serving moved. There is one
+// subcommand and no framework beneath it: `zorkd invite` writes a row and
+// prints a link, which is the whole of the administration this deployment has.
 func run(args []string, stderr io.Writer) error {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		switch args[0] {
+		case "invite":
+			return runInvite(args[1:], os.Stdout, stderr)
+		default:
+			return fmt.Errorf("unknown subcommand %q", args[0])
+		}
+	}
+	return serve(args, stderr)
+}
+
+func serve(args []string, stderr io.Writer) error {
 	fs := flag.NewFlagSet("zorkd", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -70,7 +90,7 @@ func run(args []string, stderr io.Writer) error {
 	)
 
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: zorkd [flags]\n\nServes Zork I, II and III over HTTP.\n\nFlags:\n")
+		fmt.Fprintf(stderr, "usage: zorkd [flags]\n       zorkd invite [flags] address\n\nServes Zork I, II and III over HTTP.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 
@@ -144,6 +164,10 @@ func run(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	invitations, err := invite.NewService(db.Invitations())
+	if err != nil {
+		return err
+	}
 
 	var options []session.Option
 	if *insecure {
@@ -160,11 +184,12 @@ func run(args []string, stderr io.Writer) error {
 	// session that was closed and never returned to.
 	sweeps := []sweep{
 		{name: "sessions", remove: sessions.Sweep},
+		{name: "invitations", remove: invitations.Sweep},
 	}
 	runSweeps(ctx, logger, sweeps...)
 	go reap(ctx, logger, reapInterval, sweeps...)
 
-	server, err := httpserver.New(games, accounts, sessions, library, logger)
+	server, err := httpserver.New(games, accounts, sessions, invitations, library, logger)
 	if err != nil {
 		return err
 	}
