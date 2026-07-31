@@ -172,13 +172,13 @@ func TestLoginReachesOnlyItsOwnGames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
-	if _, _, err := games.Play(ctx, userID, mine.ID, "open mailbox"); err != nil {
+	if _, err := games.Play(ctx, userID, mine.ID, "open mailbox"); err != nil {
 		t.Fatalf("Play() error = %v", err)
 	}
 
 	// Somebody else holding the identifier gets nowhere with it.
 	stranger := testUser(t, db, "stranger@example.com")
-	if _, _, err := games.Play(ctx, stranger, mine.ID, "north"); !errors.Is(err, game.ErrSessionNotFound) {
+	if _, err := games.Play(ctx, stranger, mine.ID, "north"); !errors.Is(err, game.ErrSessionNotFound) {
 		t.Errorf("Play() as another user error = %v, want %v", err, game.ErrSessionNotFound)
 	}
 

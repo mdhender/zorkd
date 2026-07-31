@@ -233,6 +233,20 @@ func bindState(stmt *sqlite.Stmt, param int, state []byte) {
 	stmt.BindBytes(param, state)
 }
 
+// readStatus reads the seven status-line columns back. Games and saves store
+// the same seven under the same names.
+func readStatus(stmt *sqlite.Stmt) game.StatusLine {
+	return game.StatusLine{
+		Available: stmt.GetBool("status_available"),
+		Name:      stmt.GetText("status_name"),
+		TimeGame:  stmt.GetBool("status_time_game"),
+		Score:     int16(stmt.GetInt64("status_score")),
+		Moves:     int16(stmt.GetInt64("status_moves")),
+		Hours:     uint8(stmt.GetInt64("status_hours")),
+		Minutes:   uint8(stmt.GetInt64("status_minutes")),
+	}
+}
+
 // bindStatus writes the seven status-line columns, starting at param.
 func bindStatus(stmt *sqlite.Stmt, param int, status game.StatusLine) {
 	stmt.BindBool(param, status.Available)
@@ -268,15 +282,7 @@ func loadSession(conn *sqlite.Conn, owner, rowID int64) (game.Session, error) {
 				session.Version = stmt.GetInt64("version")
 				session.Halted = stmt.GetBool("halted")
 
-				session.Status = game.StatusLine{
-					Available: stmt.GetBool("status_available"),
-					Name:      stmt.GetText("status_name"),
-					TimeGame:  stmt.GetBool("status_time_game"),
-					Score:     int16(stmt.GetInt64("status_score")),
-					Moves:     int16(stmt.GetInt64("status_moves")),
-					Hours:     uint8(stmt.GetInt64("status_hours")),
-					Minutes:   uint8(stmt.GetInt64("status_minutes")),
-				}
+				session.Status = readStatus(stmt)
 
 				if n := stmt.GetLen("story_key"); n != sha256.Size {
 					badKey = n

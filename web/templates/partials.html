@@ -54,3 +54,112 @@ to look the same.
 */}}
 {{define "turn"}}&gt;{{.Command}}
 {{.Output}}{{end}}
+
+{{/*
+The bottom of the terminal, in one of its three states.
+
+It is a swappable region rather than a fixed form because typing SAVE replaces
+the command line with a field asking for a name, and typing RESTORE replaces it
+with the list to choose from. The page load and the turn that swaps it use the
+same definition, so a refresh in the middle of either question shows exactly
+what the turn showed.
+*/}}
+{{define "prompt-area"}}<div class="prompt-area" id="prompt-area">{{template "prompt-body" .}}</div>{{end}}
+
+{{define "prompt-area-oob"}}<div class="prompt-area" id="prompt-area" hx-swap-oob="true">{{template "prompt-body" .}}</div>{{end}}
+
+{{define "prompt-body"}}
+  {{- if .Halted}}{{template "ended-prompt" .}}
+  {{- else if eq .Mode "save"}}{{template "save-prompt" .}}
+  {{- else if eq .Mode "restore"}}{{template "restore-prompt" .}}
+  {{- else}}{{template "command-prompt" .}}{{end}}
+{{end}}
+
+{{/*
+Without JavaScript this is an ordinary form: it posts, and the server sends the
+browser back to a page that redraws from the same stored transcript. htmx makes
+it a turn instead, and Alpine adds the command history — which is a convenience
+local to this browser and not part of the game.
+*/}}
+{{define "command-prompt"}}<form class="prompt"
+      method="post"
+      action="/games/{{.ID}}/input"
+      hx-post="/games/{{.ID}}/input"
+      hx-target="#transcript"
+      hx-swap="beforeend"
+      hx-disabled-elt="find input, find button"
+      x-data="prompt('{{.ID}}')"
+      @htmx:before-request="starting()"
+      @htmx:after-request="finished($event)"
+      @htmx:response-error="failed()">
+  <label class="visually-hidden" for="command">Command</label>
+  <span class="caret" aria-hidden="true">&gt;</span>
+  <input type="text"
+         id="command"
+         name="command"
+         maxlength="{{.MaxCommand}}"
+         autocomplete="off"
+         autocapitalize="off"
+         autocorrect="off"
+         spellcheck="false"
+         enterkeyhint="send"
+         autofocus
+         x-ref="command"
+         x-model="command"
+         @keydown.arrow-up.prevent="earlier()"
+         @keydown.arrow-down.prevent="later()"
+         @keydown.escape="command = ''">
+  <button type="submit">Enter</button>
+</form>{{end}}
+
+{{/*
+Naming a save. The wording is the one an Infocom disk used, because that is what
+the terminal is pretending to be.
+
+This form posts rather than swapping: a save changes what a page load would
+produce, so the answer is a redraw of the whole terminal with the new line in it.
+*/}}
+{{define "save-prompt"}}<form class="prompt" method="post" action="/games/{{.ID}}/saves">
+  <label class="visually-hidden" for="save-name">Save game as</label>
+  <span class="caret">Save game as:</span>
+  <input type="text"
+         id="save-name"
+         name="name"
+         maxlength="{{.MaxSaveName}}"
+         autocomplete="off"
+         autocapitalize="off"
+         autocorrect="off"
+         spellcheck="false"
+         enterkeyhint="done"
+         autofocus>
+  <button type="submit">Save</button>
+  <a class="cancel" href="/games/{{.ID}}">Cancel</a>
+</form>
+{{if .Saves}}<p class="hint">Saving under a name already in use replaces it.</p>
+{{template "saves-list" .}}{{end}}{{end}}
+
+{{define "restore-prompt"}}{{if .Saves}}<p class="hint">Restore which?</p>
+{{template "saves-list" .}}
+<p class="hint"><a class="cancel" href="/games/{{.ID}}">Cancel</a></p>
+{{else}}<p class="hint">No saved games yet. Type SAVE to make one. <a class="cancel" href="/games/{{.ID}}">Back</a></p>{{end}}{{end}}
+
+{{/*
+An ended story. The saves are offered here too: restoring one is the way back
+from an ending, and it is the only thing left that can be done with this game.
+*/}}
+{{define "ended-prompt"}}<p class="ended" role="status">The story has ended. <a href="/">Start another game.</a></p>
+{{if .Saves}}<p class="hint">Or go back to a save:</p>
+{{template "saves-list" .}}{{end}}{{end}}
+
+{{/*
+The saves themselves. The names are the player's own words and are escaped like
+any other untrusted text.
+*/}}
+{{define "saves-list"}}<ol class="saves">
+{{range .Saves}}<li>
+<span class="name">{{.Name}}</span>
+<span class="detail">{{.Turn}} {{if eq .Turn 1}}move{{else}}moves{{end}} &middot; {{.Created}}</span>
+<form method="post" action="/games/{{$.ID}}/saves/{{.ID}}/restore"><button type="submit" class="linklike">restore</button></form>
+<form method="post" action="/games/{{$.ID}}/saves/{{.ID}}/delete"><button type="submit" class="linklike">delete</button></form>
+</li>
+{{end}}</ol>{{end}}

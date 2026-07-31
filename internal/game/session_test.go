@@ -61,16 +61,17 @@ func TestSessionSurvivesARestart(t *testing.T) {
 		t.Fatalf("NewGame() error = %v", err)
 	}
 	for _, command := range []string{"open mailbox", "take leaflet", "north"} {
-		if _, _, err := serviceOver(t, store).Play(t.Context(), player, session.ID, command); err != nil {
+		if _, err := serviceOver(t, store).Play(t.Context(), player, session.ID, command); err != nil {
 			t.Fatalf("Play(%q) error = %v", command, err)
 		}
 	}
 
 	// A new process: new library, new runner, new service, same store.
-	resumed, result, err := serviceOver(t, store).Play(t.Context(), player, session.ID, "inventory")
+	turn, err := serviceOver(t, store).Play(t.Context(), player, session.ID, "inventory")
 	if err != nil {
 		t.Fatalf("Play() after restart error = %v", err)
 	}
+	resumed, result := turn.Session, turn.Result
 
 	if !strings.Contains(result.Output, "leaflet") {
 		t.Errorf("the leaflet did not survive the restart: %q", result.Output)
@@ -94,7 +95,7 @@ func TestFailedTurnLeavesTheStoredStateIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
-	if _, _, err := service.Play(t.Context(), player, session.ID, "open mailbox"); err != nil {
+	if _, err := service.Play(t.Context(), player, session.ID, "open mailbox"); err != nil {
 		t.Fatalf("Play() error = %v", err)
 	}
 
@@ -108,7 +109,7 @@ func TestFailedTurnLeavesTheStoredStateIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
-	if _, _, err := broken.Play(t.Context(), player, session.ID, "read leaflet"); err == nil {
+	if _, err := broken.Play(t.Context(), player, session.ID, "read leaflet"); err == nil {
 		t.Fatal("Play() = nil error, want the instruction limit")
 	} else if got := Classify(err); got != FaultExecutionLimit {
 		t.Fatalf("Classify() = %v, want %v", got, FaultExecutionLimit)
@@ -128,12 +129,12 @@ func TestFailedTurnLeavesTheStoredStateIntact(t *testing.T) {
 	}
 
 	// And the session is still playable from exactly where it was.
-	_, result, err := service.Play(t.Context(), player, session.ID, "read leaflet")
+	turn, err := service.Play(t.Context(), player, session.ID, "read leaflet")
 	if err != nil {
 		t.Fatalf("Play() after a failed turn error = %v", err)
 	}
-	if !strings.Contains(result.Output, "WELCOME TO ZORK") {
-		t.Errorf("the session did not resume where it was: %q", result.Output)
+	if !strings.Contains(turn.Result.Output, "WELCOME TO ZORK") {
+		t.Errorf("the session did not resume where it was: %q", turn.Result.Output)
 	}
 }
 
@@ -147,13 +148,14 @@ func TestPlayRefusesAHaltedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
-	if _, _, err := service.Play(t.Context(), player, session.ID, "quit"); err != nil {
+	if _, err := service.Play(t.Context(), player, session.ID, "quit"); err != nil {
 		t.Fatalf("Play(quit) error = %v", err)
 	}
-	halted, result, err := service.Play(t.Context(), player, session.ID, "yes")
+	turn, err := service.Play(t.Context(), player, session.ID, "yes")
 	if err != nil {
 		t.Fatalf("Play(yes) error = %v", err)
 	}
+	halted, result := turn.Session, turn.Result
 
 	if result.Status != zmachine.Halted {
 		t.Fatalf("Status = %v, want %v", result.Status, zmachine.Halted)
@@ -165,7 +167,7 @@ func TestPlayRefusesAHaltedSession(t *testing.T) {
 		t.Errorf("a halted session stored %d bytes of state", len(halted.State))
 	}
 
-	if _, _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrGameOver) {
+	if _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrGameOver) {
 		t.Errorf("Play() on a halted session error = %v, want %v", err, ErrGameOver)
 	}
 }
@@ -176,7 +178,7 @@ func TestServiceRejectsBadRequests(t *testing.T) {
 	if _, _, err := service.NewGame(t.Context(), player, "zork4"); !errors.Is(err, ErrStoryUnavailable) {
 		t.Errorf("NewGame(zork4) error = %v, want %v", err, ErrStoryUnavailable)
 	}
-	if _, _, err := service.Play(t.Context(), player, "1234", "look"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := service.Play(t.Context(), player, "1234", "look"); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Play() on an unknown session error = %v, want %v", err, ErrSessionNotFound)
 	}
 	if _, err := service.Session(t.Context(), player, "1234"); !errors.Is(err, ErrSessionNotFound) {
@@ -188,7 +190,7 @@ func TestServiceRejectsBadRequests(t *testing.T) {
 	if _, _, err := service.NewGame(t.Context(), "", "zork1"); err == nil {
 		t.Error("NewGame() with no user = nil error, want failure")
 	}
-	if _, _, err := service.Play(t.Context(), "", "1", "look"); err == nil {
+	if _, err := service.Play(t.Context(), "", "1", "look"); err == nil {
 		t.Error("Play() with no user = nil error, want failure")
 	}
 	if _, err := service.Session(t.Context(), "", "1"); err == nil {
@@ -211,7 +213,7 @@ func TestOneUserCannotReachAnothersGame(t *testing.T) {
 	if _, err := service.Session(t.Context(), stranger, mine.ID); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Session() as another user error = %v, want %v", err, ErrSessionNotFound)
 	}
-	if _, _, err := service.Play(t.Context(), stranger, mine.ID, "north"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := service.Play(t.Context(), stranger, mine.ID, "north"); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Play() as another user error = %v, want %v", err, ErrSessionNotFound)
 	}
 
@@ -244,7 +246,7 @@ func TestPlayReportsAMissingStory(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	if _, _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrStoryUnavailable) {
+	if _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrStoryUnavailable) {
 		t.Errorf("Play() error = %v, want %v", err, ErrStoryUnavailable)
 	}
 }
@@ -262,7 +264,7 @@ func TestPlayRefusesAStaleWrite(t *testing.T) {
 		t.Fatalf("NewGame() error = %v", err)
 	}
 
-	if _, _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrVersionConflict) {
+	if _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrVersionConflict) {
 		t.Errorf("Play() error = %v, want %v", err, ErrVersionConflict)
 	}
 }
@@ -293,7 +295,7 @@ func TestConcurrentTurnsAreSerialized(t *testing.T) {
 
 	for range turns {
 		wg.Go(func() {
-			if _, _, err := service.Play(context.Background(), player, session.ID, "look"); err != nil {
+			if _, err := service.Play(context.Background(), player, session.ID, "look"); err != nil {
 				errs <- err
 			}
 		})
@@ -331,16 +333,16 @@ func TestSessionsAreIndependent(t *testing.T) {
 		t.Fatalf("NewGame(zork2) error = %v", err)
 	}
 
-	if _, _, err := service.Play(t.Context(), player, first.ID, "north"); err != nil {
+	if _, err := service.Play(t.Context(), player, first.ID, "north"); err != nil {
 		t.Fatalf("Play() error = %v", err)
 	}
 
-	_, result, err := service.Play(t.Context(), player, second.ID, "look")
+	turn, err := service.Play(t.Context(), player, second.ID, "look")
 	if err != nil {
 		t.Fatalf("Play() error = %v", err)
 	}
-	if result.StatusLine.Name != "Inside the Barrow" {
-		t.Errorf("the second session moved with the first: %q", result.StatusLine.Name)
+	if turn.Result.StatusLine.Name != "Inside the Barrow" {
+		t.Errorf("the second session moved with the first: %q", turn.Result.StatusLine.Name)
 	}
 
 	untouched, err := service.Session(t.Context(), player, second.ID)

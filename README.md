@@ -190,6 +190,16 @@ Typing anywhere on the page types at the prompt, and the arrow keys browse the c
 
 The screen comes in green or amber, with optional scanlines, remembered by the browser and applied before the first paint so a chosen amber screen never flashes green. The only animation is the blinking cursor, and it stops when the system asks for reduced motion; asking for more contrast removes the glow and the scanlines, because taking contrast away is the one thing decoration must not do. With every effect disabled the terminal is plainer and works identically.
 
+## Saving and Restoring
+
+Every completed turn is persisted, so a player never has to type `SAVE` merely to close the browser. Named saves are for going back on purpose.
+
+`SAVE` and `RESTORE` are answered by the game service and never reach the engine — the interception is in the turn cycle rather than in a request handler, so there is no path to the engine that goes around it. Only those two words are matched, and only as the first word of the line; anything after the verb is taken as a name. Typing the bare verb asks a question instead of playing a turn: the command line is replaced with the field that asks for a name, or with the saves to choose from, and nothing is written until the answer arrives.
+
+A save carries the whole screen and not only the state. The transcript, the status bar and the move count are stored beside the bytes and go back with them, because restoring a state under a transcript from after the save point would leave the player reading about a game that no longer exists.
+
+Saving under a name the game already holds replaces it, whatever case it was typed in — refusing would only teach players to delete first. Every save belongs to one game and every game to one account, so a save is reached by way of its game and authorized the same way. Restoring un-halts a game: a story that ended itself can be gone back from, and that is the only thing left an ended game offers.
+
 ## Playing From the Terminal
 
 `cmd/zorkplay` drives the turn cycle without a web server, which keeps engine and state debugging separate from web debugging:

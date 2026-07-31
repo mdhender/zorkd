@@ -851,10 +851,17 @@ GET   /                       the lobby: this player's games, and the stories
 POST  /games                  start a story
 GET   /games/{id}             the terminal, redrawn from what is stored
 POST  /games/{id}/input       one turn
+
+GET   /games/{id}/saves                    the save prompt or the restore selector
+POST  /games/{id}/saves                    write a named save
+POST  /games/{id}/saves/{save}/restore     go back to one
+POST  /games/{id}/saves/{save}/delete      remove one
 GET   /static/...
 ```
 
-`RESTART` needs no route: the engine implements the opcode, so a player types it and the resulting state is persisted like any other turn (section 13.5). The save routes arrive with milestone 11.
+`RESTART` needs no route: the engine implements the opcode, so a player types it and the resulting state is persisted like any other turn (section 13.5).
+
+The save routes hang off the game rather than standing on their own, so ownership is one join and there is no query that could reach another player's save by being called with the wrong argument. Deletion is a `POST` because a form is all a browser without JavaScript can send.
 
 Cross-origin protection comes from `net/http.CrossOriginProtection`, which refuses a state-changing request a browser reports as cross-site. It covers every POST without a token in every form.
 
@@ -1218,6 +1225,18 @@ Typing anywhere means typing at the prompt, but only when nothing else has focus
 - Consider save export/import for other interpreters as a later enhancement.
 
 The interception decision (section 13.1) is needed before milestone 9, because it shapes the terminal UI. Only the storage work waits for this milestone.
+
+**The decisions.** The interception lives in `game.Service.Play`, not in a request handler, so there is no route to the engine that goes around it. `Play` now returns a `Turn` whose `Intent` says who answered the line: the story, or this application. The match is the first word and only the words `save` and `restore`; anything after the verb is taken as a save name, which is safe because Version 3's own save and restore can only report failure.
+
+A bare `SAVE` or `RESTORE` is a question rather than a turn — nothing is played and nothing is written. The terminal answers it by echoing the line and swapping the command line for the field that asks for a name, or for the list to choose from. The swap is server-rendered from the same partial the page load uses, so a refresh mid-question shows what the turn showed.
+
+A save is a whole screen, not only a state. The transcript, the status line and the move count are written beside the bytes and go back with them, because restoring bytes under a transcript from after the save point would leave the player reading about a game that is no longer there. Names are unique within a game and matched without regard to case, so saving under a name already in use replaces it — refusing would only teach players to delete first. `MaxSavesPerGame` bounds the shelf; the count and the write are one transaction.
+
+Restoring un-halts a game: the story ended itself, and a save from before it did is the way back. That is also the only thing an ended game offers.
+
+Save and restore forms post ordinarily rather than through htmx. Both change what a page load would produce — a restore replaces the transcript outright — so the answer is a redirect and a redraw rather than a fragment spliced into a screen that is no longer current. Deletion is a `POST` rather than a `DELETE` because a form is all a browser without JavaScript can send.
+
+Export and import for other interpreters remain a later decision and were not built.
 
 ---
 

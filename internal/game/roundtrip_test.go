@@ -70,10 +70,12 @@ func TestRebuiltMachineMatchesOneKeptAlive(t *testing.T) {
 			t.Fatalf("live Run(%q) error = %v", command, err)
 		}
 
-		session, rebuilt, err = service.Play(t.Context(), player, session.ID, command)
+		turn, err := service.Play(t.Context(), player, session.ID, command)
 		if err != nil {
 			t.Fatalf("Play(%q) error = %v", command, err)
 		}
+		session, rebuilt = turn.Session, turn.Result
+
 		if got, want := session.Turn, i+1; got != want {
 			t.Errorf("session.Turn = %d, want %d", got, want)
 		}
@@ -108,11 +110,12 @@ func transcript(t *testing.T, seed uint64) string {
 	out.WriteString(result.Output)
 
 	for _, command := range route {
-		session, result, err = service.Play(t.Context(), player, session.ID, command)
+		turn, err := service.Play(t.Context(), player, session.ID, command)
 		if err != nil {
 			t.Fatalf("Play(%q) error = %v", command, err)
 		}
-		out.WriteString(result.Output)
+		session = turn.Session
+		out.WriteString(turn.Result.Output)
 	}
 
 	return out.String()

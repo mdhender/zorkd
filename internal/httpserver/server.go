@@ -86,6 +86,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /games/{id}", s.requireUser(s.showGame))
 	mux.Handle("POST /games/{id}/input", s.requireUser(s.playTurn))
 
+	mux.Handle("GET /games/{id}/saves", s.requireUser(s.showSaves))
+	mux.Handle("POST /games/{id}/saves", s.requireUser(s.createSave))
+	mux.Handle("POST /games/{id}/saves/{save}/restore", s.requireUser(s.restoreSave))
+	// Deletion is a POST rather than a DELETE because a form is the only thing
+	// a browser with no JavaScript can send, and it can send neither.
+	mux.Handle("POST /games/{id}/saves/{save}/delete", s.requireUser(s.deleteSave))
+
 	// Cross-origin protection rejects state-changing requests that a browser
 	// says came from somewhere else. It replaces a token in every form, which
 	// the HTMX design would otherwise have to carry by hand.

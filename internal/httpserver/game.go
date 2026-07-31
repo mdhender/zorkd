@@ -39,9 +39,37 @@ type gameView struct {
 	Transcript  string
 	UpperWindow string
 	Status      statusView
-	Halted      bool
 	Notice      string
+
+	// Prompt is what sits under the transcript: the command line, or one of
+	// the questions this application asks in its place.
+	Prompt promptView
+}
+
+// promptView is the bottom of the terminal.
+//
+// It is a view of its own because a turn can replace it without redrawing the
+// page: typing SAVE swaps the command line for a field asking for a name, and
+// the same markup has to come out of a page load and out of a turn.
+type promptView struct {
+	ID string
+
+	// Mode is "" for the command line, "save" for the name field, or
+	// "restore" for the selector.
+	Mode string
+
+	Halted      bool
 	MaxCommand  int
+	MaxSaveName int
+	Saves       []saveRow
+}
+
+// saveRow is one named save on the selector.
+type saveRow struct {
+	ID      string
+	Name    string
+	Turn    int
+	Created string
 }
 
 // statusView is the status bar the engine reported.
@@ -142,7 +170,12 @@ func (s *Server) newGame(w http.ResponseWriter, r *http.Request, player user) {
 // This is what a refresh and a fresh login both do. The state is the server's,
 // so the screen is rebuilt rather than remembered by the browser.
 func (s *Server) showGame(w http.ResponseWriter, r *http.Request, player user) {
-	stored, err := s.games.Session(r.Context(), player.ID, r.PathValue("id"))
+	s.drawGame(w, r, player, r.PathValue("id"), "")
+}
+
+// drawGame renders the terminal with the prompt in the given mode.
+func (s *Server) drawGame(w http.ResponseWriter, r *http.Request, player user, sessionID, mode string) {
+	stored, err := s.games.Session(r.Context(), player.ID, sessionID)
 	if err != nil {
 		if errors.Is(err, game.ErrSessionNotFound) {
 			http.NotFound(w, r)
@@ -157,18 +190,54 @@ func (s *Server) showGame(w http.ResponseWriter, r *http.Request, player user) {
 		Story:      "Zork",
 		Transcript: trimPrompt(stored.Transcript),
 		Status:     storedStatusView(stored.Status),
-		Halted:     stored.Halted,
 		Notice:     r.URL.Query().Get("notice"),
-		MaxCommand: game.MaxCommandBytes,
+		Prompt:     newPromptView(stored.ID, mode, stored.Halted),
 	}
 	if entry, ok := s.library.ByKey(stored.StoryKey); ok {
 		view.Story = entry.Title
+	}
+
+	// The saves are read only when something is going to show them. An ended
+	// game shows them too, because restoring one is the way back from an
+	// ending.
+	if mode != "" || stored.Halted {
+		saves, err := s.games.Saves(r.Context(), player.ID, stored.ID)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		view.Prompt.Saves = saveRows(saves)
 	}
 
 	// The upper window is not kept: it is a screen overlay that belongs to the
 	// turn that drew it, and Zork does not use one. The transcript and the
 	// status bar are what a refresh needs.
 	s.renderPage(w, r, "game.html", http.StatusOK, view)
+}
+
+// newPromptView is the bottom of the terminal in one of its three states.
+func newPromptView(sessionID, mode string, halted bool) promptView {
+	return promptView{
+		ID:          sessionID,
+		Mode:        mode,
+		Halted:      halted,
+		MaxCommand:  game.MaxCommandBytes,
+		MaxSaveName: game.MaxSaveNameBytes,
+	}
+}
+
+// saveRows renders the saves for the selector.
+func saveRows(saves []game.Save) []saveRow {
+	rows := make([]saveRow, 0, len(saves))
+	for _, save := range saves {
+		rows = append(rows, saveRow{
+			ID:      save.ID,
+			Name:    save.Name,
+			Turn:    save.Turn,
+			Created: save.CreatedAt.Local().Format("2 Jan 2006, 15:04"),
+		})
+	}
+	return rows
 }
 
 // playTurn plays one command and returns what it added to the screen.
@@ -193,17 +262,35 @@ func (s *Server) playTurn(w http.ResponseWriter, r *http.Request, player user) {
 		return
 	}
 
-	_, result, err := s.games.Play(r.Context(), player.ID, sessionID, command)
+	turn, err := s.games.Play(r.Context(), player.ID, sessionID, command)
 	if err != nil {
 		s.turnFailed(w, r, sessionID, command, err)
 		return
 	}
 
+	// SAVE and RESTORE were answered by the game service and never reached the
+	// engine. A bare one is a question this application still has to ask.
+	switch {
+	case turn.Asked:
+		s.askAbout(w, r, player, sessionID, command, promptMode(turn.Intent))
+		return
+
+	case turn.Intent == game.IntentSave:
+		s.answerTurn(w, r, sessionID, command, turn.Notice())
+		return
+
+	case turn.Intent == game.IntentRestore:
+		// The whole transcript went back with the state, so there is nothing to
+		// append: the screen is redrawn from what is now stored.
+		s.redrawGame(w, r, sessionID)
+		return
+	}
+
 	if isHTMX(r) {
 		s.renderFragment(w, r, http.StatusOK,
-			fragment{"turn", struct{ Command, Output string }{command, trimPrompt(result.Output)}},
-			fragment{"status-bar-oob", newStatusView(result.StatusLine)},
-			fragment{"upper-window-oob", result.UpperWindow},
+			fragment{"turn", struct{ Command, Output string }{command, trimPrompt(turn.Result.Output)}},
+			fragment{"status-bar-oob", newStatusView(turn.Result.StatusLine)},
+			fragment{"upper-window-oob", turn.Result.UpperWindow},
 		)
 		return
 	}

@@ -55,10 +55,11 @@ func TestTranscriptIsKeptAndBounded(t *testing.T) {
 	}
 
 	for _, command := range []string{"open mailbox", "take leaflet", "read leaflet"} {
-		session, _, err = service.Play(t.Context(), player, session.ID, command)
+		turn, err := service.Play(t.Context(), player, session.ID, command)
 		if err != nil {
 			t.Fatalf("Play(%q) error = %v", command, err)
 		}
+		session = turn.Session
 	}
 
 	for _, want := range []string{"West of House", ">open mailbox", "WELCOME TO ZORK"} {
@@ -74,10 +75,11 @@ func TestTranscriptIsKeptAndBounded(t *testing.T) {
 
 	// Long enough to have to trim, played against a real story.
 	for range 600 {
-		session, _, err = service.Play(t.Context(), player, session.ID, "look")
+		turn, err := service.Play(t.Context(), player, session.ID, "look")
 		if err != nil {
 			t.Fatalf("Play() error = %v", err)
 		}
+		session = turn.Session
 		if len(session.Transcript) > MaxTranscriptBytes {
 			t.Fatalf("the transcript reached %d bytes, over the %d limit",
 				len(session.Transcript), MaxTranscriptBytes)
@@ -108,7 +110,7 @@ func TestGamesLists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
-	if _, _, err := service.Play(t.Context(), player, first.ID, "north"); err != nil {
+	if _, err := service.Play(t.Context(), player, first.ID, "north"); err != nil {
 		t.Fatalf("Play() error = %v", err)
 	}
 

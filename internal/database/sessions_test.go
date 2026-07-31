@@ -357,7 +357,7 @@ func TestGameSurvivesAServerRestart(t *testing.T) {
 		t.Fatalf("the game did not open: %q", opening.Output)
 	}
 	for _, command := range []string{"open mailbox", "take leaflet", "north"} {
-		if _, _, err := service.Play(ctx, owner, session.ID, command); err != nil {
+		if _, err := service.Play(ctx, owner, session.ID, command); err != nil {
 			t.Fatalf("Play(%q) error = %v", command, err)
 		}
 	}
@@ -372,10 +372,11 @@ func TestGameSurvivesAServerRestart(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	after, result, err := resumed.Play(ctx, owner, session.ID, "inventory")
+	turn, err := resumed.Play(ctx, owner, session.ID, "inventory")
 	if err != nil {
 		t.Fatalf("Play() after the restart error = %v", err)
 	}
+	after, result := turn.Session, turn.Result
 	if !strings.Contains(result.Output, "leaflet") {
 		t.Errorf("the leaflet did not survive the restart: %q", result.Output)
 	}
@@ -415,7 +416,7 @@ func TestConcurrentTurnsThroughSQLite(t *testing.T) {
 
 	for range turns {
 		wg.Go(func() {
-			if _, _, err := service.Play(ctx, owner, session.ID, "look"); err != nil {
+			if _, err := service.Play(ctx, owner, session.ID, "look"); err != nil {
 				errs <- err
 			}
 		})

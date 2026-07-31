@@ -7,51 +7,13 @@
 
   <pre class="transcript" id="transcript" tabindex="0" aria-label="Game transcript">{{.Transcript}}</pre>
 
-  {{if .Halted}}
-  <p class="ended" role="status">The story has ended. <a href="/">Start another game.</a></p>
-  {{else}}
-  {{/*
-  Without JavaScript this is an ordinary form: it posts, and the server sends
-  the browser back to a page that redraws from the same stored transcript. htmx
-  makes it a turn instead, and Alpine adds the command history — which is a
-  convenience local to this browser and not part of the game.
-  */}}
-  <form class="prompt"
-        method="post"
-        action="/games/{{.ID}}/input"
-        hx-post="/games/{{.ID}}/input"
-        hx-target="#transcript"
-        hx-swap="beforeend"
-        hx-disabled-elt="find input, find button"
-        x-data="prompt('{{.ID}}')"
-        @htmx:before-request="starting()"
-        @htmx:after-request="finished($event)"
-        @htmx:response-error="failed()">
-    <label class="visually-hidden" for="command">Command</label>
-    <span class="caret" aria-hidden="true">&gt;</span>
-    <input type="text"
-           id="command"
-           name="command"
-           maxlength="{{.MaxCommand}}"
-           autocomplete="off"
-           autocapitalize="off"
-           autocorrect="off"
-           spellcheck="false"
-           enterkeyhint="send"
-           autofocus
-           x-ref="command"
-           x-model="command"
-           @keydown.arrow-up.prevent="earlier()"
-           @keydown.arrow-down.prevent="later()"
-           @keydown.escape="command = ''">
-    <button type="submit">Enter</button>
-  </form>
-  {{end}}
+  {{template "prompt-area" .Prompt}}
 
   <p class="notice" id="notice" role="status">{{.Notice}}</p>
 
   <div class="chrome">
     <a href="/">Games</a>
+    <a href="/games/{{.ID}}/saves">Saves</a>
     <form method="post" action="/logout"><button type="submit" class="linklike">Log out</button></form>
   </div>
 

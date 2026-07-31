@@ -156,6 +156,44 @@ a:focus-visible {
     caret-color: var(--phosphor);
 }
 
+.prompt .caret {
+    white-space: nowrap;
+}
+
+.prompt .cancel {
+    white-space: nowrap;
+}
+
+/* ---- named saves ------------------------------------------------------ */
+
+/*
+ * The selector reads as a numbered list because that is how a terminal offered
+ * a choice. The numbers are the list's own; what a button posts is the save's
+ * identifier, which is the database's business and never the player's.
+ */
+.saves {
+    margin: 0.25rem 0 0.75rem;
+    padding-left: 3ch;
+}
+
+.saves li {
+    padding: 0.15rem 0;
+}
+
+.saves .name {
+    color: var(--phosphor);
+}
+
+.saves .detail {
+    color: var(--phosphor-dim);
+    margin-left: 1ch;
+}
+
+.saves form {
+    display: inline;
+    margin-left: 1.5ch;
+}
+
 button {
     border: 1px solid var(--phosphor-dim);
     background: var(--panel);

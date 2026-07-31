@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,6 +103,56 @@ type Store interface {
 
 	// List returns the user's games, most recently played first.
 	List(ctx context.Context, userID string) ([]Summary, error)
+
+	// CreateSave writes a snapshot of the user's game under snapshot.Name,
+	// replacing whatever the game already holds under that name and reporting
+	// whether it replaced one. Names are matched without regard to case.
+	//
+	// It returns ErrTooManySaves rather than writing a name the game does not
+	// already hold once the game holds MaxSavesPerGame of them.
+	CreateSave(ctx context.Context, snapshot Snapshot) (Save, bool, error)
+
+	// Saves returns the game's saves, newest first, without their bytes.
+	Saves(ctx context.Context, userID, gameID string) ([]Save, error)
+
+	// LoadSave returns one save with the bytes that restore it, or
+	// ErrSaveNotFound.
+	LoadSave(ctx context.Context, userID, gameID, saveID string) (Snapshot, error)
+
+	// DeleteSave removes one save and returns what it removed, or
+	// ErrSaveNotFound.
+	DeleteSave(ctx context.Context, userID, gameID, saveID string) (Save, error)
+}
+
+// A Turn is what one submitted line produced.
+//
+// A line is not necessarily a turn of the story: SAVE and RESTORE are answered
+// by this application, and Intent says which happened. A caller that only ever
+// plays the story still has to look, because a player may type either of those
+// words at any prompt.
+type Turn struct {
+	// Intent is who answered the line.
+	Intent Intent
+
+	// Session is the stored session as the line left it. It is the zero value
+	// when Asked is true, because a question changes nothing.
+	Session Session
+
+	// Result is the engine's, and is meaningful only when Intent is
+	// IntentPlay.
+	Result zmachine.Result
+
+	// Save is the save written or restored, when the line named one.
+	Save Save
+
+	// Replaced records that the save written took the place of one the game
+	// already held under that name.
+	Replaced bool
+
+	// Asked records that the line was a bare SAVE or RESTORE. Nothing was
+	// written and nothing was played: the player has still to be asked for a
+	// name, or shown the saves to choose between.
+	Asked bool
 }
 
 // A Summary is one of a user's games without the bytes that resume it.
@@ -177,20 +228,38 @@ func (s *Service) NewGame(ctx context.Context, userID, storyID string) (Session,
 	return session, result, nil
 }
 
-// Play runs one command against a stored session and stores what it produced.
+// Play answers one line the player submitted.
 //
-// The session is locked for the whole read-run-write cycle, so two commands
-// submitted at once are played one after the other rather than both against the
-// same state. The lock covers this process; the conditional write covers the
-// rest, and a turn that loses the race is refused with ErrVersionConflict rather
-// than replayed against a state the player never saw.
+// SAVE and RESTORE are answered here and never reach [Runner.Run]: in Version 3
+// the story's own save reports failure without branching, so a player who typed
+// SAVE would see "Failed." — and this application owns persistence anyway. The
+// interception is in the service rather than in a request handler so that there
+// is no way to reach the engine that goes around it.
 //
-// A failed turn writes nothing. The session returned with the error is the
-// zero value; the stored one is still the good one, and the command may be
-// tried again if [Classify] says the fault is retryable.
-func (s *Service) Play(ctx context.Context, userID, sessionID, command string) (Session, zmachine.Result, error) {
+// A bare SAVE or RESTORE returns a Turn with Asked set: it is a question, and
+// nothing is written until the answer arrives. One with a name on the line is
+// carried out here and now.
+//
+// An ordinary line is a turn of the story. The session is locked for the whole
+// read-run-write cycle, so two commands submitted at once are played one after
+// the other rather than both against the same state. The lock covers this
+// process; the conditional write covers the rest, and a turn that loses the race
+// is refused with ErrVersionConflict rather than replayed against a state the
+// player never saw.
+//
+// A failed turn writes nothing. The Turn returned with the error is the zero
+// value; the stored session is still the good one, and the command may be tried
+// again if [Classify] says the fault is retryable.
+func (s *Service) Play(ctx context.Context, userID, sessionID, command string) (Turn, error) {
 	if userID == "" {
-		return Session{}, zmachine.Result{}, errors.New("game: play: no user")
+		return Turn{}, errors.New("game: play: no user")
+	}
+
+	switch line := Interpret(command); line.Intent {
+	case IntentSave:
+		return s.playSave(ctx, userID, sessionID, line)
+	case IntentRestore:
+		return s.playRestore(ctx, userID, sessionID, line)
 	}
 
 	unlock := s.locks.lock(sessionID)
@@ -198,21 +267,21 @@ func (s *Service) Play(ctx context.Context, userID, sessionID, command string) (
 
 	session, err := s.store.Load(ctx, userID, sessionID)
 	if err != nil {
-		return Session{}, zmachine.Result{}, fmt.Errorf("game: session %s: load: %w", sessionID, err)
+		return Turn{}, fmt.Errorf("game: session %s: load: %w", sessionID, err)
 	}
 	if session.Halted {
-		return Session{}, zmachine.Result{}, fmt.Errorf("game: session %s: %w", sessionID, ErrGameOver)
+		return Turn{}, fmt.Errorf("game: session %s: %w", sessionID, ErrGameOver)
 	}
 
 	entry, ok := s.library.ByKey(session.StoryKey)
 	if !ok {
-		return Session{}, zmachine.Result{}, fmt.Errorf("game: session %s: story %s: %w",
+		return Turn{}, fmt.Errorf("game: session %s: story %s: %w",
 			sessionID, session.StoryKey, ErrStoryUnavailable)
 	}
 
 	result, err := s.runner.Run(ctx, entry, session.State, command)
 	if err != nil {
-		return Session{}, zmachine.Result{}, err
+		return Turn{}, err
 	}
 
 	// A halted story returns no state, and storing that nil is the one time
@@ -226,11 +295,64 @@ func (s *Service) Play(ctx context.Context, userID, sessionID, command string) (
 
 	session, err = s.store.Update(ctx, session)
 	if err != nil {
-		return Session{}, zmachine.Result{}, fmt.Errorf("game: session %s: store turn %d: %w",
+		return Turn{}, fmt.Errorf("game: session %s: store turn %d: %w",
 			sessionID, session.Turn, err)
 	}
 
-	return session, result, nil
+	return Turn{Intent: IntentPlay, Session: session, Result: result}, nil
+}
+
+// playSave answers a SAVE the player typed.
+func (s *Service) playSave(ctx context.Context, userID, sessionID string, line Command) (Turn, error) {
+	if line.Name == "" {
+		return Turn{Intent: IntentSave, Asked: true}, nil
+	}
+
+	clean, err := CleanSaveName(line.Name)
+	if err != nil {
+		return Turn{}, err
+	}
+
+	unlock := s.locks.lock(sessionID)
+	defer unlock()
+
+	session, save, replaced, err := s.save(ctx, userID, sessionID, clean, line.Text)
+	if err != nil {
+		return Turn{}, err
+	}
+
+	return Turn{Intent: IntentSave, Session: session, Save: save, Replaced: replaced}, nil
+}
+
+// playRestore answers a RESTORE the player typed.
+//
+// A name on the line is matched against the game's saves rather than looked up
+// by identifier: the player typed something they read off the list, and the
+// identifiers are the database's business.
+func (s *Service) playRestore(ctx context.Context, userID, sessionID string, line Command) (Turn, error) {
+	if line.Name == "" {
+		return Turn{Intent: IntentRestore, Asked: true}, nil
+	}
+
+	unlock := s.locks.lock(sessionID)
+	defer unlock()
+
+	saves, err := s.store.Saves(ctx, userID, sessionID)
+	if err != nil {
+		return Turn{}, fmt.Errorf("game: session %s: list saves: %w", sessionID, err)
+	}
+
+	wanted, ok := findSave(saves, strings.Join(strings.Fields(line.Name), " "))
+	if !ok {
+		return Turn{}, fmt.Errorf("game: session %s: save %q: %w", sessionID, line.Name, ErrSaveNotFound)
+	}
+
+	session, save, err := s.restore(ctx, userID, sessionID, wanted.ID, line.Text)
+	if err != nil {
+		return Turn{}, err
+	}
+
+	return Turn{Intent: IntentRestore, Session: session, Save: save}, nil
 }
 
 // Games returns the user's games, most recently played first.
