@@ -32,6 +32,7 @@ type Server struct {
 	sessions    *session.Manager
 	invitations *invite.Service
 	library     *game.Library
+	healthProbe *Probe
 	logger      *slog.Logger
 
 	templates *templates
@@ -45,7 +46,7 @@ type Server struct {
 
 // New returns a Server. Every dependency is required except the logger, which
 // defaults to discarding.
-func New(games *game.Service, accounts *auth.Service, sessions *session.Manager, invitations *invite.Service, library *game.Library, logger *slog.Logger) (*Server, error) {
+func New(games *game.Service, accounts *auth.Service, sessions *session.Manager, invitations *invite.Service, library *game.Library, healthProbe *Probe, logger *slog.Logger) (*Server, error) {
 	switch {
 	case games == nil:
 		return nil, errors.New("httpserver: nil game service")
@@ -57,6 +58,8 @@ func New(games *game.Service, accounts *auth.Service, sessions *session.Manager,
 		return nil, errors.New("httpserver: nil invitation service")
 	case library == nil:
 		return nil, errors.New("httpserver: nil library")
+	case healthProbe == nil:
+		return nil, errors.New("httpserver: nil health probe")
 	}
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -73,6 +76,7 @@ func New(games *game.Service, accounts *auth.Service, sessions *session.Manager,
 		sessions:    sessions,
 		invitations: invitations,
 		library:     library,
+		healthProbe: healthProbe,
 		logger:      logger,
 		templates:   parsed,
 		static:      http.StripPrefix("/static/", http.FileServerFS(web.Static())),
@@ -92,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /static/", s.static)
+	mux.HandleFunc("GET /healthz", s.health)
 
 	mux.HandleFunc("GET /login", s.showLogin)
 	mux.HandleFunc("POST /login", s.logIn)
@@ -198,6 +203,10 @@ func parseForm(w http.ResponseWriter, r *http.Request) error {
 // not to write down.
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
 		next.ServeHTTP(recorder, r)

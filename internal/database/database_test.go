@@ -94,6 +94,12 @@ func TestOpenPreparesTheDatabase(t *testing.T) {
 	}
 }
 
+func TestPing(t *testing.T) {
+	if err := testDB(t).Ping(context.Background()); err != nil {
+		t.Fatalf("Ping() error = %v", err)
+	}
+}
+
 // Reopening an existing database applies nothing and loses nothing. This is
 // what every server restart does.
 func TestOpenIsRepeatable(t *testing.T) {

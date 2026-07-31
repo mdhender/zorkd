@@ -80,7 +80,7 @@ func newLoggingTestClient(t *testing.T, logger *slog.Logger) *client {
 		t.Fatalf("invite.NewService() error = %v", err)
 	}
 
-	server, err := New(games, accounts, sessions, invitations, library, logger)
+	server, err := New(games, accounts, sessions, invitations, library, NewProbe(testPinger{}, logger), logger)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -93,6 +93,10 @@ func newLoggingTestClient(t *testing.T, logger *slog.Logger) *client {
 		invited:     invited,
 	}
 }
+
+type testPinger struct{}
+
+func (testPinger) Ping(context.Context) error { return nil }
 
 // otherBrowser is a second browser on the same server: its own cookies, its own
 // address, and no session.
@@ -890,17 +894,19 @@ func TestNewRequiresItsParts(t *testing.T) {
 		sessions    *session.Manager
 		invitations *invite.Service
 		library     *game.Library
+		healthProbe *Probe
 	}{
-		{name: "no game service", accounts: accounts, sessions: sessions, invitations: invitations, library: library},
-		{name: "no auth service", games: games, sessions: sessions, invitations: invitations, library: library},
-		{name: "no session manager", games: games, accounts: accounts, invitations: invitations, library: library},
-		{name: "no invitation service", games: games, accounts: accounts, sessions: sessions, library: library},
-		{name: "no library", games: games, accounts: accounts, sessions: sessions, invitations: invitations},
+		{name: "no game service", accounts: accounts, sessions: sessions, invitations: invitations, library: library, healthProbe: NewProbe(testPinger{}, nil)},
+		{name: "no auth service", games: games, sessions: sessions, invitations: invitations, library: library, healthProbe: NewProbe(testPinger{}, nil)},
+		{name: "no session manager", games: games, accounts: accounts, invitations: invitations, library: library, healthProbe: NewProbe(testPinger{}, nil)},
+		{name: "no invitation service", games: games, accounts: accounts, sessions: sessions, library: library, healthProbe: NewProbe(testPinger{}, nil)},
+		{name: "no library", games: games, accounts: accounts, sessions: sessions, invitations: invitations, healthProbe: NewProbe(testPinger{}, nil)},
+		{name: "no health probe", games: games, accounts: accounts, sessions: sessions, invitations: invitations, library: library},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := New(tt.games, tt.accounts, tt.sessions, tt.invitations, tt.library, nil); err == nil {
+			if _, err := New(tt.games, tt.accounts, tt.sessions, tt.invitations, tt.library, tt.healthProbe, nil); err == nil {
 				t.Fatal("New() = nil error, want failure")
 			}
 		})

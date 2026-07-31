@@ -191,8 +191,19 @@ func serve(args []string, stderr io.Writer) error {
 	}
 	runSweeps(ctx, logger, sweeps...)
 	go reap(ctx, logger, reapInterval, sweeps...)
+	healthProbe := httpserver.NewProbe(db, logger)
+	probeCtx, cancelProbe := context.WithCancel(ctx)
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		healthProbe.Run(probeCtx)
+	}()
+	defer func() {
+		cancelProbe()
+		<-probeDone
+	}()
 
-	server, err := httpserver.New(games, accounts, sessions, invitations, library, logger)
+	server, err := httpserver.New(games, accounts, sessions, invitations, library, healthProbe, logger)
 	if err != nil {
 		return err
 	}
