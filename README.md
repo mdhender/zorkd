@@ -203,9 +203,11 @@ The proxy must:
 * **preserve the external `Host`.** Rewriting it to `localhost:8080` makes every `Origin`/`Host` comparison a mismatch, and legitimate posts start being refused;
 * **reach `zorkd` over loopback or a private network,** and be the only thing that can.
 
-The application needs nothing in return. Session cookies are marked `Secure` by default, so it already assumes it is reached over HTTPS and does not have to be told per request — there is no `X-Forwarded-Proto` handling and none is wanted. `AddTrustedOrigin` is likewise unused, and stays that way while the terminal is served from a single origin.
+The application needs nothing in return. Session cookies are marked `Secure` by default, so it already assumes it is reached over HTTPS and does not have to be told per request — there is no `X-Forwarded-Proto` handling and none is wanted. `AddTrustedOrigin` is likewise unused, and stays that way while the terminal is served from a single origin; a second origin is where to go looking for it.
 
-`-insecure-cookies` has no place in any of this.
+One consequence is worth planning for rather than discovering. The rate limits on logging in and registering key on the address the connection came from and deliberately do not read `X-Forwarded-For`, so behind a proxy every player shares one bucket. The example configuration below sets `X-Real-IP` and `X-Forwarded-For` regardless, so the headers are already arriving when the limiter is taught which hop to trust.
+
+`-insecure-cookies` has no place in any of this, and it is the one part of the requirement the process can check for itself: given together with a listener bound to anything but loopback, the server refuses to start rather than logging a warning nobody reads. The rest has to be written down precisely because it cannot be checked — the server cannot see a TLS version it never negotiated, and it cannot tell a stripped header from an absent one.
 
 ### nginx
 

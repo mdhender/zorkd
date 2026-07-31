@@ -582,6 +582,8 @@ Prefer conventional server-side session semantics over JWT unless a concrete dep
 
 CSRF beyond `SameSite` belongs with the forms that need it — see milestone 9. `net/http.CrossOriginProtection` covers the HTMX design without a token in every form.
 
+Both of those assume the deployment of section 17.1. `Secure` means the cookie is simply not sent to a server reached over plain HTTP, and the cross-origin check reads headers that only TLS makes worth reading.
+
 ### 8.3 Authorization
 
 Every game and save operation must be scoped to the authenticated user.
@@ -908,7 +910,7 @@ The registration routes are gated by an invitation (section 8.1.1). `GET /regist
 
 The save routes hang off the game rather than standing on their own, so ownership is one join and there is no query that could reach another player's save by being called with the wrong argument. Deletion is a `POST` because a form is all a browser without JavaScript can send.
 
-Cross-origin protection comes from `net/http.CrossOriginProtection`, which refuses a state-changing request a browser reports as cross-site. It covers every POST without a token in every form.
+Cross-origin protection comes from `net/http.CrossOriginProtection`, which refuses a state-changing request a browser reports as cross-site. It covers every POST without a token in every form. What it reads are headers a browser set and the network carried, so it is only as good as the deployment underneath it: section 17.1 states the trusted-proxy and TLS requirement it depends on.
 
 These are not intended as a public JSON API.
 
@@ -996,6 +998,7 @@ At minimum:
 - use cryptographically secure session identifiers;
 - use secure cookies;
 - enforce CSRF protection appropriate to the chosen session/HTMX design;
+- run behind a trusted proxy that terminates TLS 1.3 or better, and be reachable only through it (section 17.1);
 - escape all game output when rendering HTML;
 - never treat story output as HTML;
 - limit command/input size;
@@ -1014,6 +1017,29 @@ The engine treats story files and saved states as hostile binary input: every ad
 That is the engine's guarantee, not a reason to skip ours. Do not assume a stored state is valid merely because this server previously produced it; persisted data can be corrupted, and `ErrInvalidState` must be handled rather than treated as impossible.
 
 Vulnerabilities in the engine follow its `SECURITY.md` rather than its public issue tracker.
+
+### 17.1 Deployment: behind a trusted proxy that terminates TLS
+
+`zorkd` speaks plain HTTP and has no TLS of its own. **It must run behind a trusted reverse proxy that terminates TLS 1.3 or better, and it must be reachable only through that proxy.** This is a requirement rather than a recommendation, because the cross-origin protection of section 14 depends on it.
+
+`net/http.CrossOriginProtection` decides using the `Sec-Fetch-Site` header, or by comparing the hostname in `Origin` against `Host`, and a request carrying neither is assumed to be same-origin or non-browser and is allowed. Every input it trusts is therefore a header that travelled over the wire. Over plaintext an attacker on the path removes both, and state-changing requests pass the check instead of failing it — the protection is not weakened, it is bypassed. TLS is what makes those headers worth reading, and 1.3 as the floor closes the downgrade and legacy-cipher route back to the same position.
+
+The same argument is why the proxy must be *trusted* and why the listener must not be public. Anything that can open a socket to `zorkd` can send whatever `Sec-Fetch-Site` it likes, so an exposed port defeats the proxy however good the proxy's TLS is. `-addr` defaults to `localhost:8080` for that reason rather than by accident.
+
+The proxy must:
+
+- terminate TLS 1.3 or better, redirect HTTP to HTTPS, and send HSTS;
+- forward `Origin` and `Sec-Fetch-Site` unmodified. A proxy that strips request headers it does not recognise turns the CSRF protection off, and nothing in the application reports that it happened. Everything keeps working, which is what makes this the failure worth checking for first;
+- preserve the external `Host`. `CrossOriginProtection` compares `url.Parse(origin).Host` against `r.Host` verbatim, so a proxy that rewrites `Host` to `localhost:8080` makes every comparison a mismatch and begins refusing legitimate posts;
+- reach `zorkd` over loopback or a private network, and be the only thing that can.
+
+The application needs nothing in return. Session cookies carry `Secure` by default — `session.NewManager` sets it, and only `WithInsecureCookies` clears it (section 8.2) — so the application already assumes it is reached over HTTPS and does not have to be told per request. There is no `X-Forwarded-Proto` handling and none is wanted. `AddTrustedOrigin` is unused and stays that way while the terminal is served from a single origin; adding a second origin is what would call for it.
+
+The rate limits of section 8.1 key on the address the connection came from and deliberately do not read `X-Forwarded-For`, so behind a proxy every player shares one bucket. Have the proxy set `X-Real-IP` and `X-Forwarded-For` anyway: teaching the limiter which hop to trust is separate work, and the headers should already be arriving when it happens.
+
+Almost none of this is enforceable in process. The server cannot see a TLS version it never negotiated, and it cannot tell a stripped header from an absent one, which is exactly why it is specified here. The one detectable mistake is checked: `-insecure-cookies` together with a listener bound to anything other than loopback describes a development flag that escaped into a deployment, and `cmd/zorkd` refuses to start on that combination rather than logging a warning nobody reads. `-insecure-cookies` exists so a session survives plain HTTP on a developer's machine and has no place in a deployment.
+
+A worked configuration for one proxy is in `README.md`, which also records the nginx-specific trap: nginx defaults `Host` to `$proxy_host`, so `proxy_set_header Host $http_host;` is required, and `$http_host` rather than `$host` because `$host` drops the port.
 
 ---
 
