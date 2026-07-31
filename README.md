@@ -102,6 +102,7 @@ The engine deliberately stops at the edge of the screen. Everything past it is o
 * **Rendering.** No word wrapping, no screen width, no cursor model. Story output arrives with its whitespace preserved exactly, and the roughly 80-column terminal is built here.
 * **The upper window and status line.** Reported as data, never printed. Presentation is ours.
 * **Save and restore.** In-story `SAVE` and `RESTORE` report failure without branching — legal Version 3 behavior, but the player would just see `Failed.` The application intercepts those commands before they reach the engine and wires them to session storage.
+* **Restart.** The engine implements the opcode perfectly well, but the transcript and the move count sit beside the state rather than inside it, and nothing in a result says a restart happened. `RESTART` is intercepted too, so the screen goes back with the story instead of keeping the abandoned game above the new one.
 * **Transport, users, persistence, transactions, retries, concurrency control.** The engine has no filesystem, no network, and no environment.
 
 ## Story Files
@@ -268,11 +269,13 @@ The screen comes in green or amber, with optional scanlines, remembered by the b
 
 Every completed turn is persisted, so a player never has to type `SAVE` merely to close the browser. Named saves are for going back on purpose.
 
-`SAVE` and `RESTORE` are answered by the game service and never reach the engine — the interception is in the turn cycle rather than in a request handler, so there is no path to the engine that goes around it. Only those two words are matched, and only as the first word of the line; anything after the verb is taken as a name. Typing the bare verb asks a question instead of playing a turn: the command line is replaced with the field that asks for a name, or with the saves to choose from, and nothing is written until the answer arrives.
+`SAVE`, `RESTORE` and `RESTART` are answered by the game service and never reach the engine — the interception is in the turn cycle rather than in a request handler, so there is no path to the engine that goes around it. Only those three words are matched, and only as the first word of the line; anything after `SAVE` or `RESTORE` is taken as a name, and `RESTART` takes no argument. Typing the bare verb asks a question instead of playing a turn: the command line is replaced with the field that asks for a name, with the saves to choose from, or with the restart confirmation, and nothing is written until the answer arrives.
 
 A save carries the whole screen and not only the state. The transcript, the status bar and the move count are stored beside the bytes and go back with them, because restoring a state under a transcript from after the save point would leave the player reading about a game that no longer exists.
 
-Saving under a name the game already holds replaces it, whatever case it was typed in — refusing would only teach players to delete first. Every save belongs to one game and every game to one account, so a save is reached by way of its game and authorized the same way. Restoring un-halts a game: a story that ended itself can be gone back from, and that is the only thing left an ended game offers.
+Saving under a name the game already holds replaces it, whatever case it was typed in — refusing would only teach players to delete first. Every save belongs to one game and every game to one account, so a save is reached by way of its game and authorized the same way. Restoring un-halts a game: a story that ended itself can be gone back from, and it is one of the two things left an ended game offers.
+
+The other is restarting it. Confirming a restart begins the story again and stores the opening the way a new game does — the transcript replaced rather than added to, the move count back to zero — and a story that ended itself can be restarted as readily as one in progress. The game's named saves survive: each is a complete state written from the same story, so every one of them still restores, and throwing them away would be the destructive reading of a request to start over.
 
 ## Playing From the Terminal
 
@@ -384,7 +387,7 @@ At minimum, test:
 * classification of every engine error class;
 * word wrapping and status-line rendering;
 * HTML escaping of story output;
-* interception of `SAVE` and `RESTORE`;
+* interception of `SAVE`, `RESTORE` and `RESTART`;
 * persistence, user isolation, and concurrent updates;
 * complete command sequences against the actual Zork story files.
 

@@ -812,9 +812,15 @@ Every save row belongs to one game and one user, and every restore must verify t
 
 ### 13.5 Restart
 
-`RESTART` is implemented by the engine: the story executes the opcode, the machine returns to its initial state, and the resulting `Result.State` is persisted like any other turn. No special host handling is required to make it work.
+The engine still needs no help to reset the machine. `RESTART` is an opcode: the story executes it, the machine returns to its initial state, and the resulting `Result.State` is a state like any other.
 
-The web application may request confirmation before a destructive restart, but that confirmation belongs outside the engine.
+**A change of position.** This section previously said that no special host handling was required. That was true of the engine and wrong about the application. The transcript and the move count sit *beside* the state rather than inside it (section 6), and nothing in a `Result` reports that a restart happened — so a `RESTART` played as an ordinary turn resets the story and leaves the abandoned game on the screen with the new banner printed underneath it, the move count still climbing across the boundary. A player who restarted and then refreshed read the game they had abandoned above the one they had just begun.
+
+`RESTART` is therefore intercepted in the game service alongside `SAVE` and `RESTORE`, and for the same kind of reason: what needs doing is ours, not the engine's. `game.Interpret` recognises it as narrowly as the other two — the first word, and no argument — and `Service.Play` answers it with a question, writing nothing. `Service.Restart` carries it out once the player confirms: it runs `Runner.Start` and stores the opening the way `NewGame` does, replacing the transcript rather than appending to it and putting `Session.Turn` back to zero. A halted session is deliberately restartable, since a story that ended itself is exactly the one a player wants to begin again.
+
+**Named saves survive a restart.** Every state is complete and self-contained and the story key has not changed, so each save still restores into the restarted game. Keeping them costs nothing; deleting them would be the destructive reading of a request to start over, and it is not what was asked for.
+
+The confirmation itself stays outside the engine, as it always did.
 
 ---
 
@@ -851,6 +857,7 @@ GET   /                       the lobby: this player's games, and the stories
 POST  /games                  start a story
 GET   /games/{id}             the terminal, redrawn from what is stored
 POST  /games/{id}/input       one turn
+POST  /games/{id}/restart     begin this story again, once confirmed
 
 GET   /games/{id}/saves                    the save prompt or the restore selector
 POST  /games/{id}/saves                    write a named save
@@ -859,7 +866,7 @@ POST  /games/{id}/saves/{save}/delete      remove one
 GET   /static/...
 ```
 
-`RESTART` needs no route: the engine implements the opcode, so a player types it and the resulting state is persisted like any other turn (section 13.5).
+`RESTART` does have a route, which is a change from what this section first said. The engine implements the opcode, but the screen and the move count beside the state are the application's, so the command is intercepted and answered here (section 13.5). Typing it asks for confirmation; the confirmation posts to `/games/{id}/restart`, which is a `POST` because a form is all a browser without JavaScript can send. The confirmation is drawn on the game page rather than a page of its own — `GET /games/{id}?prompt=restart` — so the game about to be thrown away is still on the screen while the question is asked.
 
 The save routes hang off the game rather than standing on their own, so ownership is one join and there is no query that could reach another player's save by being called with the wrong argument. Deletion is a `POST` because a form is all a browser without JavaScript can send.
 
@@ -894,7 +901,7 @@ A starting structure:
 │   │   ├── turn.go    # New → Restore → Run → discard
 │   │   ├── session.go # the read-run-write cycle; per-session locking
 │   │   ├── memstore.go# in-memory Store, for tests and development
-│   │   ├── command.go # SAVE/RESTORE interception
+│   │   ├── command.go # SAVE/RESTORE/RESTART interception
 │   │   └── errors.go  # engine error classification
 │   ├── httpserver/    # routes, handlers, views; does not import zmachine
 │   ├── session/       # browser sessions; game sessions live in internal/game

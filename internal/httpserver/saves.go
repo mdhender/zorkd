@@ -79,25 +79,33 @@ func (s *Server) deleteSave(w http.ResponseWriter, r *http.Request, player user)
 	s.redirectToSaves(w, r, sessionID, "restore", fmt.Sprintf("Deleted %q.", deleted.Name))
 }
 
-// askAbout asks the question a bare SAVE or RESTORE left open.
+// askAbout asks the question a bare SAVE or RESTORE, or a RESTART, left open.
 //
 // The player's line is echoed into the transcript and the prompt underneath it
 // is replaced, so the terminal reads as one conversation rather than jumping to
 // a page about saves.
 func (s *Server) askAbout(w http.ResponseWriter, r *http.Request, player user, sessionID, command, mode string) {
 	if !isHTMX(r) {
+		if mode == "restart" {
+			s.redirectToRestart(w, r, sessionID)
+			return
+		}
 		s.redirectToSaves(w, r, sessionID, mode, "")
 		return
 	}
 
 	prompt := newPromptView(sessionID, mode, false)
 
-	saves, err := s.games.Saves(r.Context(), player.ID, sessionID)
-	if err != nil {
-		s.fail(w, r, err)
-		return
+	// The restart confirmation lists nothing. The saves are not what it is
+	// asking about, and they survive it either way.
+	if mode != "restart" {
+		saves, err := s.games.Saves(r.Context(), player.ID, sessionID)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		prompt.Saves = saveRows(saves)
 	}
-	prompt.Saves = saveRows(saves)
 
 	s.renderFragment(w, r, http.StatusOK,
 		fragment{"turn", struct{ Command, Output string }{command, ""}},
@@ -162,6 +170,15 @@ func (s *Server) redirectToSaves(w http.ResponseWriter, r *http.Request, session
 	s.sendTo(w, r, to.String())
 }
 
+// redirectToRestart sends the browser to the terminal with the restart
+// confirmation under it. There is no page of its own for it: what is being
+// thrown away is on the screen, and it should still be there while the question
+// is asked.
+func (s *Server) redirectToRestart(w http.ResponseWriter, r *http.Request, sessionID string) {
+	to := url.URL{Path: "/games/" + sessionID, RawQuery: url.Values{"prompt": {"restart"}}.Encode()}
+	s.sendTo(w, r, to.String())
+}
+
 // redrawGame sends the browser back to the terminal to draw it again.
 //
 // Saving and restoring both change what a page load would produce — a restore
@@ -181,10 +198,13 @@ func (s *Server) sendTo(w http.ResponseWriter, r *http.Request, to string) {
 	http.Redirect(w, r, to, http.StatusSeeOther)
 }
 
-// promptMode names the question a bare SAVE or RESTORE asks.
+// promptMode names the question a bare SAVE or RESTORE, or a RESTART, asks.
 func promptMode(intent game.Intent) string {
-	if intent == game.IntentSave {
+	switch intent {
+	case game.IntentSave:
 		return "save"
+	case game.IntentRestart:
+		return "restart"
 	}
 	return "restore"
 }

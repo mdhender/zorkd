@@ -20,9 +20,16 @@ func TestInterpret(t *testing.T) {
 
 		{"a bare save", "save", IntentSave, "save", ""},
 		{"a bare restore", "restore", IntentRestore, "restore", ""},
+		{"a restart", "restart", IntentRestart, "restart", ""},
 		{"case does not matter", "SAVE", IntentSave, "SAVE", ""},
 		{"mixed case", "ReStOrE", IntentRestore, "ReStOrE", ""},
+		{"a restart in capitals", "RESTART", IntentRestart, "RESTART", ""},
+		{"a restart in mixed case", "ReStArT", IntentRestart, "ReStArT", ""},
 		{"space around a bare save", "  save  ", IntentSave, "save", ""},
+		{"space around a restart", "  restart  ", IntentRestart, "restart", ""},
+
+		// RESTART takes no argument, so nothing is carried off the line.
+		{"a restart with words after it", "restart now", IntentRestart, "restart now", ""},
 
 		{"a named save", "save before-troll", IntentSave, "save before-troll", "before-troll"},
 		{"a named restore", "restore before-troll", IntentRestore, "restore before-troll", "before-troll"},
@@ -33,7 +40,9 @@ func TestInterpret(t *testing.T) {
 		// with those letters is the story's.
 		{"a word that starts with save", "saves", IntentPlay, "saves", ""},
 		{"a word that starts with restore", "restored", IntentPlay, "restored", ""},
+		{"a word that starts with restart", "restarts", IntentPlay, "restarts", ""},
 		{"the verb somewhere else", "put the save in the box", IntentPlay, "put the save in the box", ""},
+		{"restart somewhere else", "tell the wizard to restart", IntentPlay, "tell the wizard to restart", ""},
 	}
 
 	for _, tt := range tests {

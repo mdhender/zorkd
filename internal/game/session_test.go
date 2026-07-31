@@ -172,6 +172,202 @@ func TestPlayRefusesAHaltedSession(t *testing.T) {
 	}
 }
 
+// The bug this test was written for: restarting reset the story but not the
+// screen this application keeps beside it, so the abandoned game stayed in the
+// transcript with the new banner underneath it and the move count went on
+// climbing.
+func TestRestartResetsTheScreen(t *testing.T) {
+	const seed = 1988
+
+	store := NewMemoryStore()
+	service, err := NewService(testLibrary(t), NewRunner(WithRandomSeed(seed)), store)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	session, opening, err := service.NewGame(t.Context(), player, "zork1")
+	if err != nil {
+		t.Fatalf("NewGame() error = %v", err)
+	}
+
+	play(t, service, session.ID, "open mailbox", "take leaflet")
+
+	before, err := service.Session(t.Context(), player, session.ID)
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+
+	turn, err := service.Restart(t.Context(), player, session.ID)
+	if err != nil {
+		t.Fatalf("Restart() error = %v", err)
+	}
+	if turn.Intent != IntentRestart {
+		t.Errorf("Intent = %v, want %v", turn.Intent, IntentRestart)
+	}
+
+	// What is stored is what the caller was handed.
+	stored, err := service.Session(t.Context(), player, session.ID)
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+	if !bytes.Equal(stored.State, turn.Session.State) || stored.Transcript != turn.Session.Transcript {
+		t.Error("the restart returned a session the store does not hold")
+	}
+
+	if strings.Contains(stored.Transcript, "take leaflet") {
+		t.Errorf("the transcript still holds the abandoned game's commands:\n%s", tail(stored.Transcript))
+	}
+	if strings.Contains(stored.Transcript, "reveals a leaflet") {
+		t.Errorf("the transcript still holds the abandoned game's output:\n%s", tail(stored.Transcript))
+	}
+	if stored.Transcript != opening.Output {
+		t.Errorf("the transcript is not the opening of the new game:\n%s", tail(stored.Transcript))
+	}
+	if stored.Turn != 0 {
+		t.Errorf("session.Turn = %d, want 0; the move count crossed the restart", stored.Turn)
+	}
+	if stored.Status.Name != "West of House" {
+		t.Errorf("status = %q, want %q", stored.Status.Name, "West of House")
+	}
+
+	// A restart is a write like any other, so a turn issued against the screen
+	// it replaced is refused rather than replayed.
+	if stored.Version <= before.Version {
+		t.Errorf("version = %d, want more than %d", stored.Version, before.Version)
+	}
+
+	// And the story went back with it: the leaflet is in the mailbox again.
+	played, err := service.Play(t.Context(), player, session.ID, "inventory")
+	if err != nil {
+		t.Fatalf("Play(inventory) error = %v", err)
+	}
+	if strings.Contains(played.Result.Output, "leaflet") {
+		t.Errorf("the abandoned game's leaflet survived the restart: %q", played.Result.Output)
+	}
+}
+
+// A restart is a question. Nothing is played and nothing is written until the
+// player confirms.
+func TestRestartOnlyAsks(t *testing.T) {
+	service := serviceOver(t, NewMemoryStore())
+
+	session, _, err := service.NewGame(t.Context(), player, "zork1")
+	if err != nil {
+		t.Fatalf("NewGame() error = %v", err)
+	}
+
+	play(t, service, session.ID, "open mailbox")
+
+	before, err := service.Session(t.Context(), player, session.ID)
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+
+	for _, command := range []string{"restart", "RESTART"} {
+		turn, err := service.Play(t.Context(), player, session.ID, command)
+		if err != nil {
+			t.Fatalf("Play(%q) error = %v", command, err)
+		}
+		if !turn.Asked || turn.Intent != IntentRestart {
+			t.Errorf("Play(%q) = %+v, want a restart that only asked", command, turn)
+		}
+
+		after, err := service.Session(t.Context(), player, session.ID)
+		if err != nil {
+			t.Fatalf("Session() error = %v", err)
+		}
+		if after.Version != before.Version || after.Turn != before.Turn {
+			t.Errorf("Play(%q) moved the session on: %d/%d became %d/%d",
+				command, before.Turn, before.Version, after.Turn, after.Version)
+		}
+		if after.Transcript != before.Transcript {
+			t.Errorf("Play(%q) wrote to the transcript:\n%s", command, tail(after.Transcript))
+		}
+	}
+}
+
+// A restart throws away the game in progress and nothing else. Every save is a
+// complete state written from the same story, so every one of them still
+// restores.
+func TestRestartKeepsNamedSaves(t *testing.T) {
+	service := serviceOver(t, NewMemoryStore())
+
+	session, _, err := service.NewGame(t.Context(), player, "zork1")
+	if err != nil {
+		t.Fatalf("NewGame() error = %v", err)
+	}
+
+	play(t, service, session.ID, "open mailbox", "take leaflet")
+
+	save, _, err := service.Save(t.Context(), player, session.ID, "with leaflet")
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	if _, err := service.Restart(t.Context(), player, session.ID); err != nil {
+		t.Fatalf("Restart() error = %v", err)
+	}
+
+	saves, err := service.Saves(t.Context(), player, session.ID)
+	if err != nil {
+		t.Fatalf("Saves() error = %v", err)
+	}
+	if len(saves) != 1 || saves[0].ID != save.ID {
+		t.Fatalf("the game holds %v after a restart, want the save it held before", saves)
+	}
+
+	restored, _, err := service.Restore(t.Context(), player, session.ID, save.ID)
+	if err != nil {
+		t.Fatalf("Restore() after a restart error = %v", err)
+	}
+	if restored.Turn != save.Turn {
+		t.Errorf("session.Turn = %d, want %d", restored.Turn, save.Turn)
+	}
+
+	turn, err := service.Play(t.Context(), player, session.ID, "inventory")
+	if err != nil {
+		t.Fatalf("Play(inventory) error = %v", err)
+	}
+	if !strings.Contains(turn.Result.Output, "leaflet") {
+		t.Errorf("the save did not survive the restart: %q", turn.Result.Output)
+	}
+}
+
+// A story that ended itself is exactly the one a player wants to begin again,
+// so a restart does not refuse the way a turn does.
+func TestRestartAHaltedSession(t *testing.T) {
+	service := serviceOver(t, NewMemoryStore())
+
+	session, _, err := service.NewGame(t.Context(), player, "zork1")
+	if err != nil {
+		t.Fatalf("NewGame() error = %v", err)
+	}
+
+	play(t, service, session.ID, "quit", "yes")
+
+	if _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrGameOver) {
+		t.Fatalf("Play() on a halted session error = %v, want %v", err, ErrGameOver)
+	}
+
+	turn, err := service.Restart(t.Context(), player, session.ID)
+	if err != nil {
+		t.Fatalf("Restart() on a halted session error = %v", err)
+	}
+	if turn.Session.Halted {
+		t.Error("the session is still halted after a restart")
+	}
+	if len(turn.Session.State) == 0 {
+		t.Error("the restarted session has no state")
+	}
+	if turn.Session.Turn != 0 {
+		t.Errorf("session.Turn = %d, want 0", turn.Session.Turn)
+	}
+
+	if _, err := service.Play(t.Context(), player, session.ID, "look"); err != nil {
+		t.Errorf("Play() after restarting a halted session error = %v", err)
+	}
+}
+
 func TestServiceRejectsBadRequests(t *testing.T) {
 	service := serviceOver(t, NewMemoryStore())
 
@@ -184,6 +380,9 @@ func TestServiceRejectsBadRequests(t *testing.T) {
 	if _, err := service.Session(t.Context(), player, "1234"); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Session() on an unknown session error = %v, want %v", err, ErrSessionNotFound)
 	}
+	if _, err := service.Restart(t.Context(), player, "1234"); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Restart() on an unknown session error = %v, want %v", err, ErrSessionNotFound)
+	}
 
 	// Nothing is played on nobody's behalf. An empty user is a caller that
 	// forgot to authenticate, not an anonymous game.
@@ -195,6 +394,9 @@ func TestServiceRejectsBadRequests(t *testing.T) {
 	}
 	if _, err := service.Session(t.Context(), "", "1"); err == nil {
 		t.Error("Session() with no user = nil error, want failure")
+	}
+	if _, err := service.Restart(t.Context(), "", "1"); err == nil {
+		t.Error("Restart() with no user = nil error, want failure")
 	}
 }
 
@@ -215,6 +417,9 @@ func TestOneUserCannotReachAnothersGame(t *testing.T) {
 	}
 	if _, err := service.Play(t.Context(), stranger, mine.ID, "north"); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Play() as another user error = %v, want %v", err, ErrSessionNotFound)
+	}
+	if _, err := service.Restart(t.Context(), stranger, mine.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Restart() as another user error = %v, want %v", err, ErrSessionNotFound)
 	}
 
 	// And the refused turn did not move the game.

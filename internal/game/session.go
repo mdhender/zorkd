@@ -126,10 +126,10 @@ type Store interface {
 
 // A Turn is what one submitted line produced.
 //
-// A line is not necessarily a turn of the story: SAVE and RESTORE are answered
-// by this application, and Intent says which happened. A caller that only ever
-// plays the story still has to look, because a player may type either of those
-// words at any prompt.
+// A line is not necessarily a turn of the story: SAVE, RESTORE and RESTART are
+// answered by this application, and Intent says which happened. A caller that
+// only ever plays the story still has to look, because a player may type any of
+// those words at any prompt.
 type Turn struct {
 	// Intent is who answered the line.
 	Intent Intent
@@ -149,9 +149,9 @@ type Turn struct {
 	// already held under that name.
 	Replaced bool
 
-	// Asked records that the line was a bare SAVE or RESTORE. Nothing was
-	// written and nothing was played: the player has still to be asked for a
-	// name, or shown the saves to choose between.
+	// Asked records that the line was a bare SAVE or RESTORE, or a RESTART.
+	// Nothing was written and nothing was played: the player has still to be
+	// asked for a name, shown the saves to choose between, or asked to confirm.
 	Asked bool
 }
 
@@ -230,15 +230,17 @@ func (s *Service) NewGame(ctx context.Context, userID, storyID string) (Session,
 
 // Play answers one line the player submitted.
 //
-// SAVE and RESTORE are answered here and never reach [Runner.Run]: in Version 3
-// the story's own save reports failure without branching, so a player who typed
-// SAVE would see "Failed." — and this application owns persistence anyway. The
-// interception is in the service rather than in a request handler so that there
-// is no way to reach the engine that goes around it.
+// SAVE, RESTORE and RESTART are answered here and never reach [Runner.Run]: in
+// Version 3 the story's own save reports failure without branching, so a player
+// who typed SAVE would see "Failed." — and this application owns persistence
+// anyway. RESTART is intercepted because the screen beside the state is ours;
+// see [Service.Restart]. The interception is in the service rather than in a
+// request handler so that there is no way to reach the engine that goes around
+// it.
 //
-// A bare SAVE or RESTORE returns a Turn with Asked set: it is a question, and
-// nothing is written until the answer arrives. One with a name on the line is
-// carried out here and now.
+// A bare SAVE or RESTORE, or a RESTART, returns a Turn with Asked set: it is a
+// question, and nothing is written until the answer arrives. A save or restore
+// with a name on the line is carried out here and now.
 //
 // An ordinary line is a turn of the story. The session is locked for the whole
 // read-run-write cycle, so two commands submitted at once are played one after
@@ -260,6 +262,10 @@ func (s *Service) Play(ctx context.Context, userID, sessionID, command string) (
 		return s.playSave(ctx, userID, sessionID, line)
 	case IntentRestore:
 		return s.playRestore(ctx, userID, sessionID, line)
+	case IntentRestart:
+		// A restart throws away the game in progress, so it is always a
+		// question. [Service.Restart] carries it out once the answer arrives.
+		return Turn{Intent: IntentRestart, Asked: true}, nil
 	}
 
 	unlock := s.locks.lock(sessionID)
@@ -353,6 +359,67 @@ func (s *Service) playRestore(ctx context.Context, userID, sessionID string, lin
 	}
 
 	return Turn{Intent: IntentRestore, Session: session, Save: save}, nil
+}
+
+// Restart begins the session's story again, once the player has confirmed.
+//
+// The engine needs no help to reset the machine — RESTART is an opcode, and a
+// fresh [Runner.Start] produces exactly the state it would have. What the engine
+// cannot do is put back the screen this application keeps beside that state:
+// nothing in a Result says a restart happened, so a RESTART played as an
+// ordinary turn would leave the abandoned game in the transcript with the new
+// banner underneath it and the move count still climbing. The opening is
+// therefore stored the way [Service.NewGame] stores it, replacing the transcript
+// rather than adding to it and putting the turn count back to zero.
+//
+// The game's named saves are deliberately kept. Each is a complete state and the
+// story has not changed, so every one of them still restores; throwing them away
+// would be the destructive choice, and it is not the one a player asking to
+// start over is asking for.
+//
+// The session is locked for the whole cycle and the write is conditional, as in
+// [Play]: a restart is a write like any other and a turn issued against the
+// screen it replaced is refused rather than replayed.
+func (s *Service) Restart(ctx context.Context, userID, sessionID string) (Turn, error) {
+	if userID == "" {
+		return Turn{}, errors.New("game: restart: no user")
+	}
+
+	unlock := s.locks.lock(sessionID)
+	defer unlock()
+
+	session, err := s.store.Load(ctx, userID, sessionID)
+	if err != nil {
+		return Turn{}, fmt.Errorf("game: session %s: load: %w", sessionID, err)
+	}
+
+	// A halted session is restartable, unlike a played one: a story that ended
+	// itself is exactly the one a player wants to begin again, and beginning
+	// again does not need the state that ended.
+
+	entry, ok := s.library.ByKey(session.StoryKey)
+	if !ok {
+		return Turn{}, fmt.Errorf("game: session %s: story %s: %w",
+			sessionID, session.StoryKey, ErrStoryUnavailable)
+	}
+
+	result, err := s.runner.Start(ctx, entry)
+	if err != nil {
+		return Turn{}, err
+	}
+
+	session.State = result.State
+	session.Transcript = result.Output
+	session.Status = statusOf(result.StatusLine)
+	session.Halted = result.Status == zmachine.Halted
+	session.Turn = 0
+
+	session, err = s.store.Update(ctx, session)
+	if err != nil {
+		return Turn{}, fmt.Errorf("game: session %s: store restart: %w", sessionID, err)
+	}
+
+	return Turn{Intent: IntentRestart, Session: session, Result: result}, nil
 }
 
 // Games returns the user's games, most recently played first.

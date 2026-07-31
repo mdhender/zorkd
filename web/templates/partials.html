@@ -56,20 +56,24 @@ to look the same.
 {{.Output}}{{end}}
 
 {{/*
-The bottom of the terminal, in one of its three states.
+The bottom of the terminal, in one of its states.
 
 It is a swappable region rather than a fixed form because typing SAVE replaces
-the command line with a field asking for a name, and typing RESTORE replaces it
-with the list to choose from. The page load and the turn that swaps it use the
-same definition, so a refresh in the middle of either question shows exactly
-what the turn showed.
+the command line with a field asking for a name, typing RESTORE replaces it with
+the list to choose from, and typing RESTART replaces it with the confirmation.
+The page load and the turn that swaps it use the same definition, so a refresh
+in the middle of any of those questions shows exactly what the turn showed.
+
+The restart confirmation is offered before the ended prompt, because a story that
+ended itself is exactly the one a player asks to begin again.
 */}}
 {{define "prompt-area"}}<div class="prompt-area" id="prompt-area">{{template "prompt-body" .}}</div>{{end}}
 
 {{define "prompt-area-oob"}}<div class="prompt-area" id="prompt-area" hx-swap-oob="true">{{template "prompt-body" .}}</div>{{end}}
 
 {{define "prompt-body"}}
-  {{- if .Halted}}{{template "ended-prompt" .}}
+  {{- if eq .Mode "restart"}}{{template "restart-prompt" .}}
+  {{- else if .Halted}}{{template "ended-prompt" .}}
   {{- else if eq .Mode "save"}}{{template "save-prompt" .}}
   {{- else if eq .Mode "restore"}}{{template "restore-prompt" .}}
   {{- else}}{{template "command-prompt" .}}{{end}}
@@ -144,10 +148,24 @@ produce, so the answer is a redraw of the whole terminal with the new line in it
 {{else}}<p class="hint">No saved games yet. Type SAVE to make one. <a class="cancel" href="/games/{{.ID}}">Back</a></p>{{end}}{{end}}
 
 {{/*
-An ended story. The saves are offered here too: restoring one is the way back
-from an ending, and it is the only thing left that can be done with this game.
+Confirming a restart. It posts rather than swapping, because a restart replaces
+the transcript outright and the answer is a redraw of the whole terminal.
+
+The wording says what survives it: the saves do, and a player who is about to
+throw a game away should not have to guess whether they are going too.
 */}}
-{{define "ended-prompt"}}<p class="ended" role="status">The story has ended. <a href="/">Start another game.</a></p>
+{{define "restart-prompt"}}<p class="hint">Restart this story from the beginning? This game is lost; your saved games are kept.</p>
+<form class="prompt" method="post" action="/games/{{.ID}}/restart">
+  <button type="submit" autofocus>Restart</button>
+  <a class="cancel" href="/games/{{.ID}}">Cancel</a>
+</form>{{end}}
+
+{{/*
+An ended story. The saves are offered here too: restoring one is the way back
+from an ending, and with a restart it is one of the two things left that can be
+done with this game.
+*/}}
+{{define "ended-prompt"}}<p class="ended" role="status">The story has ended. <a href="/">Start another game</a>, or <a href="/games/{{.ID}}?prompt=restart">play this one again from the beginning</a>.</p>
 {{if .Saves}}<p class="hint">Or go back to a save:</p>
 {{template "saves-list" .}}{{end}}{{end}}
 

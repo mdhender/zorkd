@@ -85,6 +85,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /games", s.requireUser(s.newGame))
 	mux.Handle("GET /games/{id}", s.requireUser(s.showGame))
 	mux.Handle("POST /games/{id}/input", s.requireUser(s.playTurn))
+	// Restarting is a POST for the same reason deletion is, and for the same
+	// reason it is not simply a turn: the confirmation the player answers is a
+	// form, and what it throws away is this application's screen as much as the
+	// engine's state.
+	mux.Handle("POST /games/{id}/restart", s.requireUser(s.restartGame))
 
 	mux.Handle("GET /games/{id}/saves", s.requireUser(s.showSaves))
 	mux.Handle("POST /games/{id}/saves", s.requireUser(s.createSave))
