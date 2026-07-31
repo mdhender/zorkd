@@ -103,6 +103,10 @@ func (s *Server) Handler() http.Handler {
 	// form, and what it throws away is this application's screen as much as the
 	// engine's state.
 	mux.Handle("POST /games/{id}/restart", s.requireUser(s.restartGame))
+	// Deleting a game is a POST for the same reason, and it is the one route
+	// here with nothing left behind it: the saves go with the game, and there
+	// is no snapshot to go back to afterwards.
+	mux.Handle("POST /games/{id}/delete", s.requireUser(s.deleteGame))
 
 	mux.Handle("GET /games/{id}/saves", s.requireUser(s.showSaves))
 	mux.Handle("POST /games/{id}/saves", s.requireUser(s.createSave))

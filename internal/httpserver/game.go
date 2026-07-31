@@ -170,14 +170,18 @@ func (s *Server) newGame(w http.ResponseWriter, r *http.Request, player user) {
 // This is what a refresh and a fresh login both do. The state is the server's,
 // so the screen is rebuilt rather than remembered by the browser.
 //
-// The restart confirmation is this same page with a different prompt under it,
-// which is where a browser with no JavaScript is sent when the player types
-// RESTART. It is the only question asked here; the save ones live on the saves
-// route with the list they need.
+// The restart and delete confirmations are this same page with a different
+// prompt under it. Restart is where a browser with no JavaScript is sent when
+// the player types RESTART; delete is where the lobby's link goes. Both ask
+// about the whole game, so the game is on the screen while the question is
+// asked. The save questions live on the saves route with the list they need.
 func (s *Server) showGame(w http.ResponseWriter, r *http.Request, player user) {
 	mode := ""
-	if r.URL.Query().Get("prompt") == "restart" {
+	switch r.URL.Query().Get("prompt") {
+	case "restart":
 		mode = "restart"
+	case "delete":
+		mode = "delete"
 	}
 
 	s.drawGame(w, r, player, r.PathValue("id"), mode)
@@ -324,6 +328,30 @@ func (s *Server) restartGame(w http.ResponseWriter, r *http.Request, player user
 	// The whole transcript went back with the state, so there is nothing to
 	// append: the screen is redrawn from what is now stored.
 	s.redrawGame(w, r, sessionID)
+}
+
+// deleteGame throws a game away, once the player has confirmed.
+//
+// It is a POST for the reason deleting a save is: a form is all a browser
+// without JavaScript can send. The browser goes to the lobby rather than back
+// to the game, because the page it was on no longer describes anything.
+func (s *Server) deleteGame(w http.ResponseWriter, r *http.Request, player user) {
+	sessionID := r.PathValue("id")
+
+	if err := s.games.Delete(r.Context(), player.ID, sessionID); err != nil {
+		if errors.Is(err, game.ErrSessionNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		s.fail(w, r, err)
+		return
+	}
+
+	to := url.URL{
+		Path:     "/",
+		RawQuery: url.Values{"notice": {"That game is gone, and the saves it held with it."}}.Encode(),
+	}
+	s.sendTo(w, r, to.String())
 }
 
 // turnFailed reports a turn that did not happen.

@@ -119,6 +119,32 @@ func (m *MemoryStore) List(_ context.Context, userID string) ([]Summary, error) 
 	return summaries, nil
 }
 
+// Delete removes the user's game and every save hanging off it.
+//
+// Another user's game is reported as missing, exactly as the database reports
+// it. The saves are swept here by hand because the database sweeps them with a
+// foreign key, and the two stores have to behave the same.
+func (m *MemoryStore) Delete(_ context.Context, userID, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[id]
+	if !ok || session.UserID != userID {
+		return fmt.Errorf("%s: %w", id, ErrSessionNotFound)
+	}
+
+	delete(m.sessions, id)
+	delete(m.updated, id)
+
+	for saveID, stored := range m.saves {
+		if stored.GameID == id {
+			delete(m.saves, saveID)
+		}
+	}
+
+	return nil
+}
+
 // CreateSave writes a snapshot under its name, replacing one the game already
 // holds under that name.
 func (m *MemoryStore) CreateSave(_ context.Context, snapshot Snapshot) (Save, bool, error) {

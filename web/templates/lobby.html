@@ -13,6 +13,9 @@
     <li>
       <a href="/games/{{.ID}}">{{.Story}}</a>
       <span class="detail">{{if .Halted}}ended{{else}}{{.Turn}} {{if eq .Turn 1}}move{{else}}moves{{end}}{{end}}</span>
+      {{/* A link, not a form: this asks the question, and the game's own page
+           answers it with the game still on the screen. */}}
+      <a class="discard" href="/games/{{.ID}}?prompt=delete">delete</a>
     </li>
     {{end}}
   </ul>

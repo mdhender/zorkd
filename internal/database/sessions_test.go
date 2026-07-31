@@ -330,6 +330,136 @@ func TestSessionsRefuseALiveGameWithNoState(t *testing.T) {
 	}
 }
 
+func TestSessionsDelete(t *testing.T) {
+	ctx := context.Background()
+	sessions, owner := testSessions(t)
+
+	created, err := sessions.Create(ctx, storedSession(owner))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if err := sessions.Delete(ctx, owner, created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	if _, err := sessions.Load(ctx, owner, created.ID); !errors.Is(err, game.ErrSessionNotFound) {
+		t.Errorf("Load() after Delete() error = %v, want %v", err, game.ErrSessionNotFound)
+	}
+	if err := sessions.Delete(ctx, owner, created.ID); !errors.Is(err, game.ErrSessionNotFound) {
+		t.Errorf("Delete() twice error = %v, want %v", err, game.ErrSessionNotFound)
+	}
+
+	listed, err := sessions.List(ctx, owner)
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(listed) != 0 {
+		t.Errorf("List() returned %d games, want none", len(listed))
+	}
+
+	// An identifier that could never have been assigned is missing, not a
+	// failure — a browser asking for "../../etc/passwd" has asked for a game
+	// that does not exist.
+	for _, id := range []string{"", "0", "-3", "abc", "1; DROP TABLE games", "../../etc/passwd"} {
+		if err := sessions.Delete(ctx, owner, id); !errors.Is(err, game.ErrSessionNotFound) {
+			t.Errorf("Delete(%q) error = %v, want %v", id, err, game.ErrSessionNotFound)
+		}
+	}
+}
+
+// The owner is in the WHERE clause, so a game that is somebody else's cannot be
+// deleted and reads as missing rather than as a refusal.
+func TestSessionsDeleteIsScopedToTheOwner(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	sessions := db.Sessions()
+
+	owner := testUser(t, db, "player@example.com")
+	stranger := testUser(t, db, "stranger@example.com")
+
+	created, err := sessions.Create(ctx, storedSession(owner))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if err := sessions.Delete(ctx, stranger, created.ID); !errors.Is(err, game.ErrSessionNotFound) {
+		t.Errorf("Delete() as another user error = %v, want %v", err, game.ErrSessionNotFound)
+	}
+
+	if _, err := sessions.Load(ctx, owner, created.ID); err != nil {
+		t.Errorf("Load() after a refused delete error = %v; the game should still be there", err)
+	}
+}
+
+// Deleting a game takes its saves with it.
+//
+// The schema does this: saves.game_id declares ON DELETE CASCADE. This test
+// exists because that is the kind of thing that stays true until somebody
+// rebuilds the table — and because SQLite enforces foreign keys only when asked
+// to, so a cascade that is declared but not switched on would leave the rows
+// behind with nothing left to reach them by.
+func TestDeletingAGameTakesItsSaves(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	sessions := db.Sessions()
+	owner := testUser(t, db, "player@example.com")
+
+	// The pragma is the whole cascade. Without it the DELETE below succeeds and
+	// silently orphans every save.
+	if got := pragma(t, db, "PRAGMA foreign_keys;"); got != "1" {
+		t.Fatalf("foreign_keys = %q, want %q; a declared cascade is not enforced without it", got, "1")
+	}
+	if got := pragma(t, db,
+		`SELECT "on_delete" FROM pragma_foreign_key_list('saves') WHERE "table" = 'games';`); got != "CASCADE" {
+		t.Fatalf("saves.game_id on delete = %q, want %q", got, "CASCADE")
+	}
+
+	doomed, err := sessions.Create(ctx, storedSession(owner))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	kept, err := sessions.Create(ctx, storedSession(owner))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	for _, name := range []string{"before troll", "after troll"} {
+		if _, _, err := sessions.CreateSave(ctx, storedSnapshot(doomed, name)); err != nil {
+			t.Fatalf("CreateSave(%q) error = %v", name, err)
+		}
+	}
+	if _, _, err := sessions.CreateSave(ctx, storedSnapshot(kept, "somewhere else")); err != nil {
+		t.Fatalf("CreateSave() error = %v", err)
+	}
+
+	if got := pragma(t, db, "SELECT count(*) FROM saves;"); got != "3" {
+		t.Fatalf("the saves table holds %s rows, want 3", got)
+	}
+
+	if err := sessions.Delete(ctx, owner, doomed.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	// Counted in the table rather than asked for through the store: a save that
+	// is merely unreachable is still a row, and it is the largest one there is.
+	if got := pragma(t, db, "SELECT count(*) FROM saves;"); got != "1" {
+		t.Errorf("the saves table holds %s rows after the delete, want 1", got)
+	}
+	if got := pragma(t, db, "SELECT count(*) FROM games;"); got != "1" {
+		t.Errorf("the games table holds %s rows after the delete, want 1", got)
+	}
+
+	// The other game kept every one of its own.
+	saves, err := sessions.Saves(ctx, owner, kept.ID)
+	if err != nil {
+		t.Fatalf("Saves() error = %v", err)
+	}
+	if len(saves) != 1 || saves[0].Name != "somewhere else" {
+		t.Errorf("the other game holds %+v, want the save it was given", saves)
+	}
+}
+
 // The milestone's own requirement: a game survives the process that was
 // playing it.
 func TestGameSurvivesAServerRestart(t *testing.T) {
