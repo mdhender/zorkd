@@ -1,10 +1,12 @@
 package httpserver
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mdhender/zorkd/internal/auth"
@@ -14,10 +16,23 @@ import (
 
 // A client is a browser: it keeps its cookies and follows nothing
 // automatically, so a test can see the redirect it was sent.
+//
+// Each one connects from its own address. The unauthenticated routes are rate
+// limited per source, so two clients that shared an address would spend one
+// allowance between them.
 type client struct {
 	t       *testing.T
 	handler http.Handler
+	addr    string
 	cookies []*http.Cookie
+}
+
+// nextAddr hands out a distinct source address. Limiters do not outlive the
+// server a test built, so addresses only have to differ within one test.
+var addrs atomic.Uint32
+
+func nextAddr() string {
+	return fmt.Sprintf("198.51.100.%d:1024", addrs.Add(1)%254+1)
 }
 
 func newTestClient(t *testing.T) *client {
@@ -46,11 +61,21 @@ func newTestClient(t *testing.T) *client {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	return &client{t: t, handler: server.Handler()}
+	return &client{t: t, handler: server.Handler(), addr: nextAddr()}
+}
+
+// otherBrowser is a second browser on the same server: its own cookies, its own
+// address, and no session.
+func (c *client) otherBrowser() *client {
+	return &client{t: c.t, handler: c.handler, addr: nextAddr()}
 }
 
 func (c *client) do(r *http.Request) *httptest.ResponseRecorder {
 	c.t.Helper()
+
+	if c.addr != "" {
+		r.RemoteAddr = c.addr
+	}
 
 	for _, cookie := range c.cookies {
 		r.AddCookie(cookie)
@@ -305,7 +330,7 @@ func TestOneUserCannotOpenAnothersGame(t *testing.T) {
 	id := owner.startGame("zork1")
 
 	// The same server, a different browser and a different account.
-	stranger := &client{t: t, handler: owner.handler}
+	stranger := owner.otherBrowser()
 	stranger.register("stranger@example.com", "another good password")
 
 	if w := stranger.get("/games/" + id); w.Code != http.StatusNotFound {
@@ -417,7 +442,7 @@ func TestOneUserCannotRestartAnothersGame(t *testing.T) {
 	id := owner.startGame("zork1")
 	owner.play(id, "open mailbox")
 
-	stranger := &client{t: t, handler: owner.handler}
+	stranger := owner.otherBrowser()
 	stranger.register("stranger@example.com", "another good password")
 
 	if w := stranger.post("/games/"+id+"/restart", nil); w.Code != http.StatusNotFound {
@@ -516,7 +541,7 @@ func TestRegisterReportsBadInput(t *testing.T) {
 	c := newTestClient(t)
 	c.register("player@example.com", "a good long password")
 
-	fresh := &client{t: t, handler: c.handler}
+	fresh := c.otherBrowser()
 
 	tests := []struct {
 		name     string

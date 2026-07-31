@@ -115,6 +115,35 @@ func TestVerifyRejectsMalformedHashes(t *testing.T) {
 	}
 }
 
+// New hashes are written at the current defaults. The numbers are in the test
+// so that changing them is a decision rather than a diff nobody reads.
+func TestHashUsesTheCurrentParameters(t *testing.T) {
+	hash, err := HashPassword("a good long password")
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+	if want := "$argon2id$v=19$m=9216,t=4,p=1$"; !strings.HasPrefix(hash, want) {
+		t.Errorf("hash = %q, want it to begin with %q", hash, want)
+	}
+}
+
+// A hash stored under the parameters this build used to write still verifies,
+// with no migration and no re-hashing.
+//
+// This is the property that makes changing the cost parameters safe, so the
+// hash below is a literal rather than something computed here: it was written
+// at m=19456,t=2,p=1 and must keep verifying however the defaults move.
+func TestVerifyAcceptsHashesWrittenAtTheOldDefaults(t *testing.T) {
+	const stored = "$argon2id$v=19$m=19456,t=2,p=1$o74lwSJe8FXggB4uC8OAgA$k3xUpiT+qUmF8L8mbtGRJYTz8ZHQX6diC9T/dKs+k4o"
+
+	if err := VerifyPassword(stored, "a good long password"); err != nil {
+		t.Errorf("VerifyPassword() with the right password error = %v", err)
+	}
+	if err := VerifyPassword(stored, "the wrong password"); !errors.Is(err, ErrPasswordMismatch) {
+		t.Errorf("VerifyPassword() error = %v, want %v", err, ErrPasswordMismatch)
+	}
+}
+
 // A hash written under different cost parameters still verifies, because the
 // parameters travel inside it. Raising them must not lock everybody out.
 func TestVerifyHonorsTheStoredParameters(t *testing.T) {

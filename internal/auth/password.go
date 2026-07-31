@@ -26,9 +26,9 @@ var ErrPasswordMismatch = errors.New("auth: password does not match")
 
 // hashParams are the Argon2id cost parameters.
 //
-// These are OWASP's current recommendation for Argon2id: 19 MiB of memory, two
-// passes, one lane. They are encoded into every hash, so raising them later
-// does not invalidate the hashes written under the old ones.
+// They are encoded into every hash, so changing them later does not invalidate
+// the hashes written under the old ones: decodeHash reads the parameters and
+// the salt out of the stored string rather than assuming these.
 type hashParams struct {
 	memory  uint32 // KiB
 	time    uint32 // passes
@@ -37,9 +37,19 @@ type hashParams struct {
 	keyLen  uint32
 }
 
+// defaultParams is OWASP's 9 MiB / four-pass pairing rather than its 19 MiB /
+// two-pass one.
+//
+// The two are recommended as equivalent — the same work, traded between memory
+// and passes — but they are not equivalent to this server. Logging in and
+// registering are unauthenticated, and both spend a full verification whether
+// or not there is an account, so the memory one request can make the server
+// allocate is a number a stranger controls. Halving it halves what a flood of
+// them costs, and the extra passes are paid by the one CPU already committed to
+// the request.
 var defaultParams = hashParams{
-	memory:  19 * 1024,
-	time:    2,
+	memory:  9 * 1024,
+	time:    4,
 	threads: 1,
 	saltLen: 16,
 	keyLen:  32,

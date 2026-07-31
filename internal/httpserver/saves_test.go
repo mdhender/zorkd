@@ -180,7 +180,7 @@ func TestOneUserCannotReachAnothersSaves(t *testing.T) {
 	id := c.startGame("zork1")
 	c.save(id, "mine")
 
-	stranger := &client{t: t, handler: c.handler}
+	stranger := c.otherBrowser()
 	stranger.register("stranger@example.com", "another good password")
 
 	for _, probe := range []struct {
