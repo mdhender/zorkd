@@ -1,0 +1,16 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{block "title" .}}Zork{{end}}</title>
+<link rel="stylesheet" href="/static/terminal.css">
+<script src="/static/vendor/htmx.min.js" defer></script>
+</head>
+<body>
+<main class="screen">
+{{block "content" .}}{{end}}
+</main>
+</body>
+</html>
+{{end}}

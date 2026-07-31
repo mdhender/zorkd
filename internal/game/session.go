@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/maloquacious/zmachine"
 )
@@ -49,6 +50,20 @@ type Session struct {
 	// one time nil is a legitimate thing to store.
 	State []byte
 
+	// Transcript is what the player has seen, as the story wrote it, with the
+	// player's own lines interleaved where the terminal showed them.
+	//
+	// It is kept because the saved state has no transcript in it and nothing
+	// in it may be parsed to recover one: without this, a browser that
+	// refreshes has nothing to redraw. It is bounded — see
+	// [MaxTranscriptBytes] — so a long game does not become a large row.
+	Transcript string
+
+	// Status is the status bar the story last reported, kept for the same
+	// reason as the transcript: a browser that refreshes must be able to draw
+	// the whole screen without playing a turn to produce it again.
+	Status StatusLine
+
 	// Turn counts the commands this application has played, which is not the
 	// story's own move counter.
 	Turn int
@@ -67,6 +82,7 @@ type Session struct {
 // It stores State as opaque bytes: it must not compress it, parse it, or write
 // anything derived from it. Implementations may be used from several goroutines
 // at once.
+//
 // Every lookup is scoped to the owning user. A session that belongs to somebody
 // else is reported as ErrSessionNotFound rather than as a refusal, because
 // distinguishing the two would let a stranger count the games on the server.
@@ -83,6 +99,22 @@ type Store interface {
 	// the new version. It returns ErrVersionConflict if the stored version has
 	// moved, and ErrSessionNotFound if the session is gone.
 	Update(ctx context.Context, session Session) (Session, error)
+
+	// List returns the user's games, most recently played first.
+	List(ctx context.Context, userID string) ([]Summary, error)
+}
+
+// A Summary is one of a user's games without the bytes that resume it.
+//
+// A list of games is read to choose between them, not to play them, and hauling
+// every state and every transcript out of the database to draw a menu would be
+// paying for what nobody asked to see.
+type Summary struct {
+	ID        string
+	StoryKey  StoryKey
+	Turn      int
+	Halted    bool
+	UpdatedAt time.Time
 }
 
 // A Service plays turns against stored sessions.
@@ -131,10 +163,12 @@ func (s *Service) NewGame(ctx context.Context, userID, storyID string) (Session,
 	}
 
 	session, err := s.store.Create(ctx, Session{
-		UserID:   userID,
-		StoryKey: entry.Key,
-		State:    result.State,
-		Halted:   result.Status == zmachine.Halted,
+		UserID:     userID,
+		StoryKey:   entry.Key,
+		State:      result.State,
+		Transcript: result.Output,
+		Status:     statusOf(result.StatusLine),
+		Halted:     result.Status == zmachine.Halted,
 	})
 	if err != nil {
 		return Session{}, zmachine.Result{}, fmt.Errorf("game: %s: create session: %w", storyID, err)
@@ -185,6 +219,8 @@ func (s *Service) Play(ctx context.Context, userID, sessionID, command string) (
 	// replacing a good state with nothing is right: the session is over and
 	// there is nothing left to resume.
 	session.State = result.State
+	session.Transcript = appendTranscript(session.Transcript, command, result.Output)
+	session.Status = statusOf(result.StatusLine)
 	session.Halted = result.Status == zmachine.Halted
 	session.Turn++
 
@@ -195,6 +231,19 @@ func (s *Service) Play(ctx context.Context, userID, sessionID, command string) (
 	}
 
 	return session, result, nil
+}
+
+// Games returns the user's games, most recently played first.
+func (s *Service) Games(ctx context.Context, userID string) ([]Summary, error) {
+	if userID == "" {
+		return nil, errors.New("game: games: no user")
+	}
+
+	summaries, err := s.store.List(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("game: user %s: list games: %w", userID, err)
+	}
+	return summaries, nil
 }
 
 // Session returns a stored session without playing anything, for a client that

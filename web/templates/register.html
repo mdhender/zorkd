@@ -1,0 +1,24 @@
+{{define "title"}}Register{{end}}
+
+{{define "content"}}
+<div class="terminal">
+  <h1>Zork</h1>
+
+  {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+
+  <form method="post" action="/register" class="credentials">
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" value="{{.Email}}"
+           autocomplete="username" autocapitalize="off" spellcheck="false" required autofocus>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="new-password"
+           minlength="{{.MinPassword}}" required>
+    <p class="hint">At least {{.MinPassword}} characters. Length is all that is asked for.</p>
+
+    <button type="submit">Register</button>
+  </form>
+
+  <p>Already registered? <a href="/login">Log in</a>.</p>
+</div>
+{{end}}

@@ -1,0 +1,309 @@
+/*
+ * An early-1980s terminal, not a modern application wearing a terminal skin.
+ *
+ * Two rules constrain everything here. The transcript is wrapped by CSS rather
+ * than by inserted newlines, so the stored text stays exactly what the story
+ * wrote; and nothing decorative is allowed to make the text harder to read.
+ */
+
+:root {
+    --phosphor: #33ff66;
+    --phosphor-dim: #1f9e3d;
+    --background: #05100a;
+    --panel: #0a1a10;
+    --columns: 80;
+}
+
+/* Amber, for players who prefer it. Set by the terminal-polish milestone. */
+:root[data-phosphor="amber"] {
+    --phosphor: #ffb642;
+    --phosphor-dim: #a8722a;
+    --background: #120c02;
+    --panel: #1d1405;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    background: var(--background);
+}
+
+body {
+    margin: 0;
+    padding: 1rem;
+    background: var(--background);
+    color: var(--phosphor);
+    font-family: "SF Mono", "DejaVu Sans Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 1rem;
+    line-height: 1.35;
+}
+
+.screen {
+    /* Roughly eighty columns of this typeface, and never wider than the phone
+       it is being read on. */
+    max-width: calc(var(--columns) * 1ch + 2rem);
+    margin: 0 auto;
+}
+
+a {
+    color: var(--phosphor);
+}
+
+h1,
+h2 {
+    font-size: 1rem;
+    font-weight: normal;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--phosphor-dim);
+}
+
+/* ---- the status bar --------------------------------------------------- */
+
+.status-bar {
+    display: flex;
+    gap: 1.5ch;
+    justify-content: space-between;
+    padding: 0.15rem 0.5ch;
+    background: var(--phosphor);
+    color: var(--background);
+    font-weight: bold;
+    /* Present even when the engine has reported nothing, so the transcript
+       does not jump a line the first time a status line arrives. */
+    min-height: 1.65em;
+}
+
+.status-bar .room {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.status-bar .score,
+.status-bar .moves,
+.status-bar .clock {
+    white-space: nowrap;
+}
+
+/* ---- the screen ------------------------------------------------------- */
+
+/*
+ * The upper window overlays fixed screen positions. Folding a long line would
+ * destroy the alignment that is its only purpose, so it is allowed to overhang
+ * and scroll sideways instead.
+ */
+.upper-window {
+    margin: 0;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--phosphor-dim);
+}
+
+.upper-window:empty {
+    display: none;
+}
+
+/*
+ * pre-wrap is the whole wrapping strategy: the story's blank lines, its
+ * indentation and its trailing prompt survive untouched, and the browser folds
+ * the long lines.
+ */
+.transcript {
+    margin: 0;
+    padding: 0.5rem 0.5ch;
+    min-height: 60vh;
+    max-height: 70vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    font: inherit;
+}
+
+.transcript:focus-visible,
+.prompt input:focus-visible,
+button:focus-visible,
+a:focus-visible {
+    outline: 2px solid var(--phosphor);
+    outline-offset: 2px;
+}
+
+/* ---- the command line ------------------------------------------------- */
+
+.prompt {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5ch;
+    padding: 0 0.5ch 0.5rem;
+}
+
+.prompt .caret {
+    color: var(--phosphor);
+}
+
+.prompt input {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: none;
+    border-bottom: 1px solid var(--phosphor-dim);
+    background: transparent;
+    color: var(--phosphor);
+    font: inherit;
+    /* iOS zooms the page when a field smaller than this is focused. */
+    font-size: max(1rem, 16px);
+    padding: 0.2rem 0;
+    caret-color: var(--phosphor);
+}
+
+button {
+    border: 1px solid var(--phosphor-dim);
+    background: var(--panel);
+    color: var(--phosphor);
+    font: inherit;
+    padding: 0.3rem 1ch;
+    cursor: pointer;
+}
+
+button:hover {
+    background: var(--phosphor);
+    color: var(--background);
+}
+
+button.linklike {
+    border: none;
+    background: none;
+    padding: 0;
+    text-decoration: underline;
+}
+
+button.linklike:hover {
+    background: none;
+    color: var(--phosphor);
+}
+
+/* ---- lobby, login, chrome --------------------------------------------- */
+
+.games,
+.stories {
+    list-style: none;
+    margin: 0 0 1.5rem;
+    padding: 0;
+}
+
+.games li,
+.stories li {
+    padding: 0.2rem 0;
+}
+
+.games .detail {
+    color: var(--phosphor-dim);
+    margin-left: 1ch;
+}
+
+.credentials {
+    display: grid;
+    gap: 0.35rem;
+    max-width: 40ch;
+    margin-bottom: 1.5rem;
+}
+
+.credentials input {
+    border: 1px solid var(--phosphor-dim);
+    background: var(--panel);
+    color: var(--phosphor);
+    font: inherit;
+    font-size: max(1rem, 16px);
+    padding: 0.35rem 0.5ch;
+}
+
+.credentials button {
+    margin-top: 0.5rem;
+    justify-self: start;
+}
+
+.hint,
+.notice,
+.ended {
+    color: var(--phosphor-dim);
+    margin: 0.25rem 0.5ch;
+}
+
+.notice:empty {
+    display: none;
+}
+
+.error {
+    margin: 0 0 1rem;
+    padding: 0.4rem 0.5ch;
+    border: 1px solid var(--phosphor);
+    color: var(--phosphor);
+}
+
+.chrome {
+    display: flex;
+    gap: 1.5ch;
+    align-items: baseline;
+    margin-top: 1.5rem;
+    color: var(--phosphor-dim);
+}
+
+.chrome form {
+    display: inline;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+/* ---- decoration ------------------------------------------------------- */
+
+/*
+ * A restrained glow, and nothing that costs legibility. Everything below is
+ * decoration: with it disabled the application looks plainer and works the
+ * same.
+ */
+@media (prefers-reduced-motion: no-preference) {
+    .transcript,
+    .prompt .caret {
+        text-shadow: 0 0 4px color-mix(in srgb, var(--phosphor) 45%, transparent);
+    }
+
+    .prompt .caret {
+        animation: blink 1.2s step-end infinite;
+    }
+}
+
+@keyframes blink {
+    50% {
+        opacity: 0.25;
+    }
+}
+
+@media (prefers-contrast: more) {
+    .transcript,
+    .prompt .caret {
+        text-shadow: none;
+    }
+}
+
+@media (max-width: 40rem) {
+    body {
+        padding: 0.5rem;
+    }
+
+    .transcript {
+        min-height: 50vh;
+    }
+
+    .prompt button {
+        display: none;
+    }
+}

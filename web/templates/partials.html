@@ -1,0 +1,39 @@
+{{/*
+The pieces the terminal is assembled from. Each is used twice: once by the page
+a browser loads, and once by the fragment a turn returns, so that a refresh and
+a turn cannot disagree about what the screen looks like.
+
+Story output reaches these templates as data and is escaped on the way in. It is
+never markup, whatever it happens to contain.
+*/}}
+
+{{define "status-fields"}}{{if .Available}}<span class="room">{{.Name}}</span>{{if .TimeGame}}<span class="clock">Time: {{.Time}}</span>{{else}}<span class="score">Score: {{.Score}}</span><span class="moves">Moves: {{.Moves}}</span>{{end}}{{end}}{{end}}
+
+{{define "status-bar"}}<div class="status-bar" id="status-bar">{{template "status-fields" .}}</div>{{end}}
+
+{{define "status-bar-oob"}}<div class="status-bar" id="status-bar" hx-swap-oob="true">{{template "status-fields" .}}</div>{{end}}
+
+{{/*
+The upper window overlays fixed screen positions, so it is never wrapped: it is
+allowed to overhang and scroll sideways rather than lose its alignment. Zork
+does not use it, but the engine can report it.
+*/}}
+{{define "upper-window"}}<pre class="upper-window" id="upper-window">{{.}}</pre>{{end}}
+
+{{define "upper-window-oob"}}<pre class="upper-window" id="upper-window" hx-swap-oob="true">{{.}}</pre>{{end}}
+
+{{/*
+One turn, appended to the transcript.
+
+The prompt is written here rather than coming from the story, because the
+story's own trailing ">" was taken off the end of the transcript and given to
+the command field: in a browser the input is the cursor, and the two would
+otherwise be printed one above the other. Putting it back in front of the
+command restores the line a terminal would have shown.
+
+Nothing here is wrapped in markup, because the transcript a refresh redraws is
+plain text and has no markup in it either. A live turn and a reloaded page have
+to look the same.
+*/}}
+{{define "turn"}}&gt;{{.Command}}
+{{.Output}}{{end}}

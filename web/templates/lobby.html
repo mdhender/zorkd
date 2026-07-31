@@ -1,0 +1,40 @@
+{{define "title"}}Zork{{end}}
+
+{{define "content"}}
+<div class="terminal">
+  <h1>The Great Underground Empire</h1>
+
+  {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
+
+  {{if .Games}}
+  <h2>Games in progress</h2>
+  <ul class="games">
+    {{range .Games}}
+    <li>
+      <a href="/games/{{.ID}}">{{.Story}}</a>
+      <span class="detail">{{if .Halted}}ended{{else}}{{.Turn}} {{if eq .Turn 1}}move{{else}}moves{{end}}{{end}}</span>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p>No games yet.</p>
+  {{end}}
+
+  <h2>Start a new game</h2>
+  <ul class="stories">
+    {{range .Stories}}
+    <li>
+      <form method="post" action="/games">
+        <input type="hidden" name="story" value="{{.ID}}">
+        <button type="submit">{{.Title}}</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+
+  <div class="chrome">
+    <span class="who">{{.Email}}</span>
+    <form method="post" action="/logout"><button type="submit" class="linklike">Log out</button></form>
+  </div>
+</div>
+{{end}}

@@ -706,6 +706,12 @@ Choose the simplest implementation that produces reliable refresh/resume behavio
 
 A bounded transcript is preferred over unbounded database growth.
 
+**The decision.** A bounded plain-text transcript and the last reported status line are stored on the game row and written in the same conditional update as the state they belong to, so what is drawn can never disagree with what will be played. The transcript holds what the story wrote with the player's own lines interleaved where the terminal showed them; wrapping and escaping are the presentation's work. It is trimmed from the oldest line once it passes `game.MaxTranscriptBytes`.
+
+The status line is stored because a refresh plays no turn: without it the bar would be blank until the player's next command. The upper window is not stored — it is a screen overlay belonging to the turn that drew it, and Zork does not use one.
+
+The story ends every turn with a bare `>` and no newline after it, leaving the cursor beside it. In a browser the command field *is* that cursor, so the rendering moves the prompt onto the input line rather than printing one above the other. The stored transcript keeps what the story wrote; only the rendering moves it.
+
 ---
 
 ## 12. HTMX Interaction
@@ -834,6 +840,24 @@ POST  /game/saves/{id}/restore
 DELETE /game/saves/{id}
 ```
 
+**What was built.** A player has more than one game — three stories, and more than one game of each — so the game routes are plural and carry an identifier:
+
+```text
+GET   /login          GET  /register
+POST  /login          POST /register
+POST  /logout
+
+GET   /                       the lobby: this player's games, and the stories
+POST  /games                  start a story
+GET   /games/{id}             the terminal, redrawn from what is stored
+POST  /games/{id}/input       one turn
+GET   /static/...
+```
+
+`RESTART` needs no route: the engine implements the opcode, so a player types it and the resulting state is persisted like any other turn (section 13.5). The save routes arrive with milestone 11.
+
+Cross-origin protection comes from `net/http.CrossOriginProtection`, which refuses a state-changing request a browser reports as cross-site. It covers every POST without a token in every form.
+
 These are not intended as a public JSON API.
 
 HTMX requests should receive HTML fragments.
@@ -865,17 +889,19 @@ A starting structure:
 │   │   ├── memstore.go# in-memory Store, for tests and development
 │   │   ├── command.go # SAVE/RESTORE interception
 │   │   └── errors.go  # engine error classification
-│   ├── httpserver/
+│   ├── httpserver/    # routes, handlers, views; does not import zmachine
 │   ├── session/       # browser sessions; game sessions live in internal/game
-│   └── terminal/      # word wrapping, status line, transcript rendering
+│   └── terminal/      # the plain-text terminal: wrapping and the status bar
 ├── games/             # embedded story images + their licenses
 │   ├── games.go
 │   ├── zork1/
 │   ├── zork2/
 │   └── zork3/
 ├── migrations/        # embedded, versioned SQL; a package like games/
-├── web/
+├── web/               # embedded templates and assets; a package like games/
+│   ├── web.go
 │   ├── static/
+│   │   └── vendor/    # third-party assets, each with its license
 │   └── templates/
 ├── testdata/
 ├── go.mod
@@ -1164,6 +1190,8 @@ Login and logout are the operations, not the routes: `auth.Service` answers whet
 - Status line.
 - Automatic focus.
 - Mobile-friendly layout.
+
+The page a browser loads and the fragment a turn returns are rendered from the same templates, so a refresh and a turn cannot disagree about what the screen looks like. htmx is served from `web/static/vendor/` rather than from a CDN: the deployment is the binary and its database, and no third party is asked for a script on every page load.
 
 ### Milestone 10 — Terminal polish
 

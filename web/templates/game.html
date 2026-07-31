@@ -1,0 +1,48 @@
+{{define "title"}}{{.Story}}{{end}}
+
+{{define "content"}}
+<div class="terminal">
+  {{template "status-bar" .Status}}
+  {{template "upper-window" .UpperWindow}}
+
+  <pre class="transcript" id="transcript" tabindex="0" aria-label="Game transcript">{{.Transcript}}</pre>
+
+  {{if .Halted}}
+  <p class="ended" role="status">The story has ended. <a href="/">Start another game.</a></p>
+  {{else}}
+  <form class="prompt"
+        method="post"
+        action="/games/{{.ID}}/input"
+        hx-post="/games/{{.ID}}/input"
+        hx-target="#transcript"
+        hx-swap="beforeend"
+        hx-disabled-elt="find input, find button"
+        hx-on::before-request="document.getElementById('notice').textContent = ''"
+        hx-on::after-request="this.reset(); this.querySelector('input').focus()"
+        hx-on::response-error="document.getElementById('notice').textContent = 'The server could not play that turn. Nothing was lost — try again.'">
+    <label class="visually-hidden" for="command">Command</label>
+    <span class="caret" aria-hidden="true">&gt;</span>
+    <input type="text"
+           id="command"
+           name="command"
+           maxlength="{{.MaxCommand}}"
+           autocomplete="off"
+           autocapitalize="off"
+           autocorrect="off"
+           spellcheck="false"
+           enterkeyhint="send"
+           autofocus>
+    <button type="submit">Enter</button>
+  </form>
+  {{end}}
+
+  <p class="notice" id="notice" role="status">{{.Notice}}</p>
+
+  <div class="chrome">
+    <a href="/">Games</a>
+    <form method="post" action="/logout"><button type="submit" class="linklike">Log out</button></form>
+  </div>
+</div>
+
+<script src="/static/terminal.js" defer></script>
+{{end}}

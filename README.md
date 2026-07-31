@@ -164,6 +164,28 @@ Each story is loaded once, at startup, and the resulting `*Story` is shared by e
 
 Sessions are keyed by a SHA-256 over the story image. Release and serial identify an *edition* rather than a file, and early Version 3 stories carry no checksum at all.
 
+## Running the Server
+
+```text
+$ go run ./cmd/zorkd
+$ go run ./cmd/zorkd -addr :8080 -database /var/lib/zorkd/zorkd.db
+$ go run ./cmd/zorkd -insecure-cookies        # local development over plain HTTP
+```
+
+`ZORK_ADDR`, `ZORK_DATABASE`, `ZORK_TURN_TIMEOUT` and `ZORK_INSTRUCTION_LIMIT` set the same things; a flag wins over the environment, and a setting that cannot be read stops the server rather than quietly becoming the default.
+
+The server needs nothing else. The story files, the templates and the assets are embedded, the database is created on first run, and the schema is brought up to date when it opens.
+
+`-insecure-cookies` drops the `Secure` attribute so a session survives plain HTTP. It exists for local development, and a deployment that serves over HTTPS must not use it — which is why the safe setting is the default and the unsafe one has to be asked for by name.
+
+## The Web Terminal
+
+The game page is text on a dark screen: a status bar, a scrolling transcript, and a command line with the cursor beside the prompt.
+
+The transcript is wrapped by CSS rather than by inserted newlines, so what is stored and what is sent stay exactly what the story wrote — its blank lines, its indentation and its trailing prompt all survive. Story output is data and never markup: it reaches the page through `html/template`, and so does whatever the player typed.
+
+A command is an ordinary HTML form enhanced with HTMX. The response is the fragment that turn added to the screen, plus the status bar swapped out of band. Without JavaScript the same form posts normally and the browser is sent back to a page that redraws from the same stored transcript — the server is the source of truth either way, which is also what makes a refresh work.
+
 ## Playing From the Terminal
 
 `cmd/zorkplay` drives the turn cycle without a web server, which keeps engine and state debugging separate from web debugging:
@@ -205,6 +227,8 @@ SQLite, in WAL mode, through `zombiezen.com/go/sqlite`. Access is explicit and s
 The state is written whole and read back whole. No column is derived from it, the schema will not accept a live game with nothing stored for it, and `NULL` means the story halted rather than the state going missing.
 
 Every turn's write is conditional on the version it read, so a turn that lost a race is refused instead of overwriting the one that won.
+
+The screen is stored beside the state and written in the same update: a bounded transcript, trimmed from the oldest line, and the status bar the last turn reported. The saved state contains neither and nothing in it may be parsed to recover them, so without this a browser that refreshed would have nothing to redraw.
 
 ## Accounts
 
@@ -335,3 +359,6 @@ Some files in this repository are not part of the package and are not covered by
 Their presence here does not make them part of this package, does not place them under this package's license, and grants you no rights to them.
 Each story file carries its own license file alongside it, and that license is what governs your use of it.
 See [games/README.md](games/README.md) for the source and license of each file.
+
+**The browser assets under `web/static/vendor/` are third-party works.**
+Each carries its own license beside it. See [web/static/vendor/README.md](web/static/vendor/README.md).

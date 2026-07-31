@@ -131,6 +131,100 @@ func TestSessionsMissing(t *testing.T) {
 	}
 }
 
+// The screen a refresh redraws is stored with the state, and comes back whole.
+func TestSessionsStoreTheScreen(t *testing.T) {
+	ctx := context.Background()
+	sessions, owner := testSessions(t)
+
+	screen := storedSession(owner)
+	screen.Transcript = "West of House\n\n>look\nYou are standing in an open field.\n\n>"
+	screen.Status = game.StatusLine{Available: true, Name: "West of House", Score: 10, Moves: 3}
+
+	created, err := sessions.Create(ctx, screen)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	loaded, err := sessions.Load(ctx, owner, created.ID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.Transcript != screen.Transcript {
+		t.Errorf("transcript =\n%q\nwant\n%q", loaded.Transcript, screen.Transcript)
+	}
+	if loaded.Status != screen.Status {
+		t.Errorf("status = %+v, want %+v", loaded.Status, screen.Status)
+	}
+
+	loaded.Transcript += "quit\n"
+	loaded.Status = game.StatusLine{Available: true, Name: "Kitchen", TimeGame: true, Hours: 22, Minutes: 5}
+
+	if _, err := sessions.Update(ctx, loaded); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	again, err := sessions.Load(ctx, owner, created.ID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if again.Transcript != loaded.Transcript || again.Status != loaded.Status {
+		t.Errorf("the update did not survive: %q / %+v", again.Transcript, again.Status)
+	}
+}
+
+// The lobby's list carries neither the state nor the transcript: it is read to
+// choose between games, not to play them.
+func TestSessionsList(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	sessions := db.Sessions()
+
+	owner := testUser(t, db, "player@example.com")
+	stranger := testUser(t, db, "stranger@example.com")
+
+	first, err := sessions.Create(ctx, storedSession(owner))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	second, err := sessions.Create(ctx, storedSession(owner))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := sessions.Create(ctx, storedSession(stranger)); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	// Move the first game so it becomes the most recent.
+	first.Turn = 1
+	if _, err := sessions.Update(ctx, first); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	listed, err := sessions.List(ctx, owner)
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("List() returned %d games, want 2 — the stranger's is not theirs to see", len(listed))
+	}
+	if listed[0].ID != first.ID || listed[1].ID != second.ID {
+		t.Errorf("List() = %s, %s; want %s first", listed[0].ID, listed[1].ID, first.ID)
+	}
+	if listed[0].Turn != 1 || listed[0].StoryKey != first.StoryKey {
+		t.Errorf("List()[0] = %+v, want the game as it was stored", listed[0])
+	}
+	if listed[0].UpdatedAt.IsZero() {
+		t.Error("List() reported no update time")
+	}
+
+	// An identifier that could never have been assigned owns nothing.
+	for _, id := range []string{"", "0", "-1", "abc"} {
+		if got, err := sessions.List(ctx, id); err != nil || len(got) != 0 {
+			t.Errorf("List(%q) = %d games, %v; want none", id, len(got), err)
+		}
+	}
+}
+
 // The owner is part of the query, so a session identifier taken from somebody
 // else's browser reads as a session that does not exist.
 func TestSessionsAreScopedToTheirOwner(t *testing.T) {

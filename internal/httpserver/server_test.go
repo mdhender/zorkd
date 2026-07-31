@@ -1,0 +1,476 @@
+package httpserver
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/mdhender/zorkd/internal/auth"
+	"github.com/mdhender/zorkd/internal/game"
+	"github.com/mdhender/zorkd/internal/session"
+)
+
+// A client is a browser: it keeps its cookies and follows nothing
+// automatically, so a test can see the redirect it was sent.
+type client struct {
+	t       *testing.T
+	handler http.Handler
+	cookies []*http.Cookie
+}
+
+func newTestClient(t *testing.T) *client {
+	t.Helper()
+
+	library, err := game.Embedded()
+	if err != nil {
+		t.Fatalf("Embedded() error = %v", err)
+	}
+	games, err := game.NewService(library, game.NewRunner(), game.NewMemoryStore())
+	if err != nil {
+		t.Fatalf("game.NewService() error = %v", err)
+	}
+	accounts, err := auth.NewService(newAccountStore())
+	if err != nil {
+		t.Fatalf("auth.NewService() error = %v", err)
+	}
+	// Plain HTTP under test, so the cookie must survive it.
+	sessions, err := session.NewManager(newSessionStore(), session.WithInsecureCookies())
+	if err != nil {
+		t.Fatalf("session.NewManager() error = %v", err)
+	}
+
+	server, err := New(games, accounts, sessions, library, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	return &client{t: t, handler: server.Handler()}
+}
+
+func (c *client) do(r *http.Request) *httptest.ResponseRecorder {
+	c.t.Helper()
+
+	for _, cookie := range c.cookies {
+		r.AddCookie(cookie)
+	}
+
+	w := httptest.NewRecorder()
+	c.handler.ServeHTTP(w, r)
+
+	c.keep(w.Result().Cookies())
+	return w
+}
+
+func (c *client) keep(cookies []*http.Cookie) {
+	for _, fresh := range cookies {
+		replaced := false
+		for i, held := range c.cookies {
+			if held.Name == fresh.Name {
+				c.cookies[i] = fresh
+				replaced = true
+			}
+		}
+		if !replaced {
+			c.cookies = append(c.cookies, fresh)
+		}
+	}
+}
+
+func (c *client) get(path string) *httptest.ResponseRecorder {
+	c.t.Helper()
+	return c.do(httptest.NewRequest(http.MethodGet, path, nil))
+}
+
+func (c *client) post(path string, form url.Values) *httptest.ResponseRecorder {
+	c.t.Helper()
+
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return c.do(r)
+}
+
+// postHTMX is the same request htmx makes.
+func (c *client) postHTMX(path string, form url.Values) *httptest.ResponseRecorder {
+	c.t.Helper()
+
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("HX-Request", "true")
+	return c.do(r)
+}
+
+// register creates an account and leaves the client logged in.
+func (c *client) register(email, password string) {
+	c.t.Helper()
+
+	w := c.post("/register", url.Values{"email": {email}, "password": {password}})
+	if w.Code != http.StatusSeeOther {
+		c.t.Fatalf("POST /register = %d, want %d: %s", w.Code, http.StatusSeeOther, w.Body.String())
+	}
+}
+
+// startGame begins a story and returns the identifier from the redirect.
+func (c *client) startGame(story string) string {
+	c.t.Helper()
+
+	w := c.post("/games", url.Values{"story": {story}})
+	if w.Code != http.StatusSeeOther {
+		c.t.Fatalf("POST /games = %d, want %d: %s", w.Code, http.StatusSeeOther, w.Body.String())
+	}
+
+	location := w.Header().Get("Location")
+	id, ok := strings.CutPrefix(location, "/games/")
+	if !ok {
+		c.t.Fatalf("Location = %q, want a game", location)
+	}
+	return id
+}
+
+func contains(t *testing.T, w *httptest.ResponseRecorder, want string) {
+	t.Helper()
+
+	if !strings.Contains(w.Body.String(), want) {
+		t.Errorf("the response does not contain %q:\n%s", want, w.Body.String())
+	}
+}
+
+func TestAnonymousRequestsGoToLogin(t *testing.T) {
+	c := newTestClient(t)
+
+	for _, path := range []string{"/", "/games/1"} {
+		t.Run(path, func(t *testing.T) {
+			w := c.get(path)
+			if w.Code != http.StatusSeeOther {
+				t.Fatalf("GET %s = %d, want %d", path, w.Code, http.StatusSeeOther)
+			}
+			if got := w.Header().Get("Location"); got != "/login" {
+				t.Errorf("Location = %q, want %q", got, "/login")
+			}
+		})
+	}
+}
+
+// An htmx request is told to navigate rather than handed a login page to splice
+// into the middle of a terminal.
+func TestAnonymousHTMXRequestIsToldToRedirect(t *testing.T) {
+	c := newTestClient(t)
+
+	w := c.postHTMX("/games/1/input", url.Values{"command": {"look"}})
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+	if got := w.Header().Get("HX-Redirect"); got != "/login" {
+		t.Errorf("HX-Redirect = %q, want %q", got, "/login")
+	}
+}
+
+func TestRegisterThenPlay(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+
+	lobby := c.get("/")
+	if lobby.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, want %d", lobby.Code, http.StatusOK)
+	}
+	contains(t, lobby, "player@example.com")
+	contains(t, lobby, "Zork I")
+
+	id := c.startGame("zork1")
+
+	page := c.get("/games/" + id)
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET /games/%s = %d, want %d", id, page.Code, http.StatusOK)
+	}
+	contains(t, page, "West of House")
+	contains(t, page, `id="transcript"`)
+	contains(t, page, `hx-post="/games/`+id+`/input"`)
+	contains(t, page, "autofocus")
+
+	turn := c.postHTMX("/games/"+id+"/input", url.Values{"command": {"open mailbox"}})
+	if turn.Code != http.StatusOK {
+		t.Fatalf("POST input = %d, want %d", turn.Code, http.StatusOK)
+	}
+
+	body := turn.Body.String()
+	contains(t, turn, "open mailbox")
+	contains(t, turn, "reveals a leaflet")
+	contains(t, turn, `hx-swap-oob="true"`)
+	contains(t, turn, "West of House")
+	contains(t, turn, "Score:")
+
+	// A fragment, not a document.
+	if strings.Contains(body, "<html") {
+		t.Error("an htmx request received a whole document")
+	}
+
+	// The command is echoed after a prompt and the story's answer follows on
+	// the next line, exactly as a terminal shows it.
+	if !strings.HasPrefix(body, "&gt;open mailbox\n") {
+		t.Errorf("the fragment does not begin with a prompt and the echoed command:\n%q",
+			body[:min(60, len(body))])
+	}
+
+	// The story's own trailing prompt is not in the fragment: the command
+	// field draws it, and two of them would be one too many.
+	transcript, _, _ := strings.Cut(body, `<div class="status-bar"`)
+	if strings.HasSuffix(transcript, "&gt;") {
+		t.Errorf("the fragment ends with a prompt of its own:\n%q", transcript)
+	}
+}
+
+// A refresh redraws the whole terminal from what is stored. The browser
+// remembers nothing.
+func TestRefreshRedrawsTheTerminal(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	for _, command := range []string{"open mailbox", "take leaflet", "north"} {
+		w := c.postHTMX("/games/"+id+"/input", url.Values{"command": {command}})
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST %q = %d, want %d", command, w.Code, http.StatusOK)
+		}
+	}
+
+	page := c.get("/games/" + id)
+	body := page.Body.String()
+
+	for _, want := range []string{"West of House", "open mailbox", "take leaflet", "north"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the redrawn transcript is missing %q", want)
+		}
+	}
+
+	// The status bar is redrawn too. It belongs to the turn that reported it,
+	// and a refresh plays no turn, so it has to have been stored.
+	for _, want := range []string{`id="status-bar"`, "North of House", "Score:", "Moves: 3"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the redrawn status bar is missing %q", want)
+		}
+	}
+}
+
+// Without JavaScript the same form still works: it posts, and the browser is
+// sent back to a page that redraws from the same stored transcript.
+func TestPlayWithoutHTMX(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	w := c.post("/games/"+id+"/input", url.Values{"command": {"open mailbox"}})
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("POST input = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if got := w.Header().Get("Location"); got != "/games/"+id {
+		t.Errorf("Location = %q, want %q", got, "/games/"+id)
+	}
+
+	contains(t, c.get("/games/"+id), "reveals a leaflet")
+}
+
+// Story output is data. Whatever it contains, it is never markup — and neither
+// is what the player typed.
+func TestStoryOutputAndCommandsAreEscaped(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	w := c.postHTMX("/games/"+id+"/input", url.Values{"command": {"<script>alert(1)</script>"}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST input = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+	if strings.Contains(body, "<script>") {
+		t.Errorf("the command reached the page as markup:\n%s", body)
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Errorf("the command was not escaped:\n%s", body)
+	}
+
+	// And it survives into the page a refresh draws.
+	page := c.get("/games/" + id).Body.String()
+	if strings.Contains(page, "<script>alert(1)</script>") {
+		t.Error("the command reached the redrawn page as markup")
+	}
+}
+
+// A game identifier is not a capability. Another player holding one cannot open
+// it, and is not told that it exists.
+func TestOneUserCannotOpenAnothersGame(t *testing.T) {
+	owner := newTestClient(t)
+	owner.register("player@example.com", "a good long password")
+	id := owner.startGame("zork1")
+
+	// The same server, a different browser and a different account.
+	stranger := &client{t: t, handler: owner.handler}
+	stranger.register("stranger@example.com", "another good password")
+
+	if w := stranger.get("/games/" + id); w.Code != http.StatusNotFound {
+		t.Errorf("GET as another user = %d, want %d", w.Code, http.StatusNotFound)
+	}
+	if w := stranger.postHTMX("/games/"+id+"/input", url.Values{"command": {"north"}}); w.Code != http.StatusNotFound {
+		t.Errorf("POST as another user = %d, want %d", w.Code, http.StatusNotFound)
+	}
+
+	// The owner's game did not move.
+	contains(t, owner.get("/games/"+id), "West of House")
+}
+
+func TestLoginAndLogout(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+
+	if w := c.post("/logout", nil); w.Code != http.StatusSeeOther {
+		t.Fatalf("POST /logout = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+
+	// Logged out: the cookie the client still holds is worth nothing.
+	if w := c.get("/"); w.Code != http.StatusSeeOther {
+		t.Errorf("GET / after logout = %d, want a redirect to login", w.Code)
+	}
+
+	bad := c.post("/login", url.Values{"email": {"player@example.com"}, "password": {"the wrong one"}})
+	if bad.Code != http.StatusUnauthorized {
+		t.Errorf("POST /login with a wrong password = %d, want %d", bad.Code, http.StatusUnauthorized)
+	}
+	contains(t, bad, "do not match an account")
+
+	good := c.post("/login", url.Values{"email": {"PLAYER@example.com"}, "password": {"a good long password"}})
+	if good.Code != http.StatusSeeOther {
+		t.Fatalf("POST /login = %d, want %d", good.Code, http.StatusSeeOther)
+	}
+	if w := c.get("/"); w.Code != http.StatusOK {
+		t.Errorf("GET / after logging in = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestRegisterReportsBadInput(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+
+	fresh := &client{t: t, handler: c.handler}
+
+	tests := []struct {
+		name     string
+		email    string
+		password string
+		want     string
+	}{
+		{"taken", "player@example.com", "a good long password", "already an account"},
+		{"not an address", "player", "a good long password", "does not look like an email"},
+		{"short password", "other@example.com", "short", "not long enough"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := fresh.post("/register", url.Values{"email": {tt.email}, "password": {tt.password}})
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+			}
+			contains(t, w, tt.want)
+
+			// The address is offered back; the password never is.
+			if tt.email != "" && !strings.Contains(w.Body.String(), tt.email) {
+				t.Error("the address was not echoed back into the form")
+			}
+			if strings.Contains(w.Body.String(), tt.password) {
+				t.Error("the password was echoed back into the page")
+			}
+		})
+	}
+}
+
+// A command longer than a Version 3 text buffer holds is refused before the
+// engine sees it, and the terminal says so.
+func TestOverlongCommandIsRefused(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	long := strings.Repeat("x", game.MaxCommandBytes+1)
+
+	w := c.postHTMX("/games/"+id+"/input", url.Values{"command": {long}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	contains(t, w, "too long")
+
+	// And the game did not move.
+	contains(t, c.get("/games/"+id), "West of House")
+}
+
+// Cross-origin protection refuses a state-changing request that a browser says
+// came from somewhere else.
+func TestCrossOriginPostIsRefused(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	r := httptest.NewRequest(http.MethodPost, "/games/"+id+"/input",
+		strings.NewReader(url.Values{"command": {"north"}}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Sec-Fetch-Site", "cross-site")
+
+	if w := c.do(r); w.Code != http.StatusForbidden {
+		t.Errorf("a cross-site POST = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestStaticAssetsAreServed(t *testing.T) {
+	c := newTestClient(t)
+
+	for _, path := range []string{"/static/terminal.css", "/static/vendor/htmx.min.js"} {
+		t.Run(path, func(t *testing.T) {
+			w := c.get(path)
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET %s = %d, want %d", path, w.Code, http.StatusOK)
+			}
+			if w.Body.Len() == 0 {
+				t.Error("the asset is empty")
+			}
+		})
+	}
+}
+
+func TestNewRequiresItsParts(t *testing.T) {
+	library, err := game.Embedded()
+	if err != nil {
+		t.Fatalf("Embedded() error = %v", err)
+	}
+	games, err := game.NewService(library, game.NewRunner(), game.NewMemoryStore())
+	if err != nil {
+		t.Fatalf("game.NewService() error = %v", err)
+	}
+	accounts, err := auth.NewService(newAccountStore())
+	if err != nil {
+		t.Fatalf("auth.NewService() error = %v", err)
+	}
+	sessions, err := session.NewManager(newSessionStore())
+	if err != nil {
+		t.Fatalf("session.NewManager() error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		games    *game.Service
+		accounts *auth.Service
+		sessions *session.Manager
+		library  *game.Library
+	}{
+		{name: "no game service", accounts: accounts, sessions: sessions, library: library},
+		{name: "no auth service", games: games, sessions: sessions, library: library},
+		{name: "no session manager", games: games, accounts: accounts, library: library},
+		{name: "no library", games: games, accounts: accounts, sessions: sessions},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := New(tt.games, tt.accounts, tt.sessions, tt.library, nil); err == nil {
+				t.Fatal("New() = nil error, want failure")
+			}
+		})
+	}
+}

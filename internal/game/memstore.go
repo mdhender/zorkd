@@ -3,8 +3,11 @@ package game
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 )
 
 // A MemoryStore keeps sessions in memory.
@@ -14,12 +17,16 @@ import (
 type MemoryStore struct {
 	mu       sync.Mutex
 	sessions map[string]Session
+	updated  map[string]time.Time
 	nextID   int64
 }
 
 // NewMemoryStore returns an empty store.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{sessions: make(map[string]Session)}
+	return &MemoryStore{
+		sessions: make(map[string]Session),
+		updated:  make(map[string]time.Time),
+	}
 }
 
 // Create assigns an identifier and stores the session at version 1.
@@ -36,6 +43,8 @@ func (m *MemoryStore) Create(_ context.Context, session Session) (Session, error
 	session.Version = 1
 
 	m.sessions[session.ID] = clone(session)
+	m.updated[session.ID] = time.Now()
+
 	return session, nil
 }
 
@@ -72,7 +81,39 @@ func (m *MemoryStore) Update(_ context.Context, session Session) (Session, error
 
 	session.Version++
 	m.sessions[session.ID] = clone(session)
+	m.updated[session.ID] = time.Now()
+
 	return session, nil
+}
+
+// List returns the user's games, most recently played first.
+func (m *MemoryStore) List(_ context.Context, userID string) ([]Summary, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var summaries []Summary
+	for id, session := range m.sessions {
+		if session.UserID != userID {
+			continue
+		}
+		summaries = append(summaries, Summary{
+			ID:        id,
+			StoryKey:  session.StoryKey,
+			Turn:      session.Turn,
+			Halted:    session.Halted,
+			UpdatedAt: m.updated[id],
+		})
+	}
+
+	slices.SortFunc(summaries, func(a, b Summary) int {
+		if c := b.UpdatedAt.Compare(a.UpdatedAt); c != 0 {
+			return c
+		}
+		// Games stored within the same clock tick still need a stable order.
+		return strings.Compare(b.ID, a.ID)
+	})
+
+	return summaries, nil
 }
 
 // Len reports how many sessions the store holds.

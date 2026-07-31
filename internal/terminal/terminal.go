@@ -1,11 +1,12 @@
-// Package terminal renders a turn for a screen.
+// Package terminal renders a turn for a character terminal.
 //
 // The engine hands back text, not display operations: it performs no word
 // wrapping, has no notion of screen width, and reports the status line rather
 // than printing it. Everything a player sees is therefore built here.
 //
-// Story output is data and never trusted markup. It reaches HTML only through
-// html/template, which escapes it.
+// This is the plain-text presentation, for a real terminal. The browser is a
+// different terminal with different rules — CSS wraps there, so no newline is
+// ever inserted — and its markup lives with the server that sends it.
 package terminal
 
 import (
@@ -95,17 +96,26 @@ func scoreAndMoves(status zmachine.StatusLine) string {
 	// A time game reports the hour instead of a score. Zork is a score game;
 	// this branch is here because the engine can report either.
 	if status.TimeGame {
-		hour, suffix := status.Hours%12, "am"
-		if hour == 0 {
-			hour = 12
-		}
-		if status.Hours >= 12 {
-			suffix = "pm"
-		}
-		return fmt.Sprintf("Time: %d:%02d %s", hour, status.Minutes, suffix)
+		return "Time: " + Clock(status)
 	}
 
 	return fmt.Sprintf("Score: %d   Moves: %d", status.Score, status.Turns)
+}
+
+// Clock formats the hour a time game reports.
+//
+// It is meaningless unless [zmachine.StatusLine.TimeGame] is true. Zork is a
+// score game and will never reach it; the engine can report either, so both are
+// rendered.
+func Clock(status zmachine.StatusLine) string {
+	hour, suffix := status.Hours%12, "am"
+	if hour == 0 {
+		hour = 12
+	}
+	if status.Hours >= 12 {
+		suffix = "pm"
+	}
+	return fmt.Sprintf("%d:%02d %s", hour, status.Minutes, suffix)
 }
 
 // Wrap folds text to the given width, preserving everything the story meant by
