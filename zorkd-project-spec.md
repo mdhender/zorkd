@@ -829,11 +829,13 @@ A starting structure:
 │   ├── database/
 │   ├── game/          # the turn cycle; the only importer of zmachine
 │   │   ├── library.go # LoadStory once per story, keyed by SHA-256
-│   │   ├── turn.go    # New → Restore → Run → persist → discard
+│   │   ├── turn.go    # New → Restore → Run → discard
+│   │   ├── session.go # the read-run-write cycle; per-session locking
+│   │   ├── memstore.go# in-memory Store, for tests and development
 │   │   ├── command.go # SAVE/RESTORE interception
 │   │   └── errors.go  # engine error classification
 │   ├── httpserver/
-│   ├── session/
+│   ├── session/       # browser sessions; game sessions live in internal/game
 │   └── terminal/      # word wrapping, status line, transcript rendering
 ├── games/             # embedded story images + their licenses
 │   ├── games.go
