@@ -19,6 +19,14 @@ const (
 	DefaultInstructionLimit = 5_000_000
 )
 
+// MaxCommandBytes bounds one line of player input.
+//
+// A Version 3 text buffer holds at most 255 characters and Zork's is far
+// smaller, so anything longer than this would reach the story as a truncated
+// fragment. Refusing it is better than playing half a command the player did
+// not issue.
+const MaxCommandBytes = 256
+
 // A Runner executes turns.
 //
 // It holds the settings every turn shares and no per-session state, so one
@@ -115,6 +123,58 @@ func (r *Runner) Start(ctx context.Context, story *Entry) (zmachine.Result, erro
 	result, err := machine.Start(ctx)
 	if err != nil {
 		return zmachine.Result{}, r.fail(story, "start", err)
+	}
+
+	return result, nil
+}
+
+// Run plays one command against a stored state and runs to the next input
+// boundary.
+//
+// This is the whole turn: a machine is built from the story, the stored state
+// is restored into it, the command is played, and the machine is discarded
+// before the call returns. Nothing is carried between turns except the bytes
+// the caller stores, which is what makes a turn identical whether the previous
+// one happened a millisecond or a month ago.
+//
+// The command must be the player's line as typed. Host-owned commands such as
+// SAVE and RESTORE are intercepted before this point and never reach the
+// engine.
+//
+// On failure the returned Result is unusable and the caller must write nothing
+// to storage: the state stored at the end of the previous turn is still the
+// good one. Classify the error with [Classify]; only [FaultTimeout] is worth
+// replaying, and only with a fresh context.
+func (r *Runner) Run(ctx context.Context, story *Entry, saved []byte, command string) (zmachine.Result, error) {
+	if story == nil {
+		return zmachine.Result{}, errors.New("game: run: nil story")
+	}
+	if len(saved) == 0 {
+		return zmachine.Result{}, fmt.Errorf("game: %s: run: no saved state", story.ID)
+	}
+	if len(command) > MaxCommandBytes {
+		return zmachine.Result{}, fmt.Errorf("game: %s: run: command is %d bytes, limit is %d",
+			story.ID, len(command), MaxCommandBytes)
+	}
+
+	ctx, cancel := r.bound(ctx)
+	defer cancel()
+
+	machine, err := r.newMachine(story)
+	if err != nil {
+		return zmachine.Result{}, fmt.Errorf("game: %s: new machine: %w", story.ID, err)
+	}
+
+	// A state that belongs to another story is refused here rather than
+	// decoded against the wrong memory, so a mismatched story key surfaces as
+	// FaultInvalidState before any instruction executes.
+	if err := machine.Restore(saved); err != nil {
+		return zmachine.Result{}, r.fail(story, "restore", err)
+	}
+
+	result, err := machine.Run(ctx, command)
+	if err != nil {
+		return zmachine.Result{}, r.fail(story, "run", err)
 	}
 
 	return result, nil

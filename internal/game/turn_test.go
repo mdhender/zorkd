@@ -205,6 +205,243 @@ func TestStartLogsToTheSuppliedLogger(t *testing.T) {
 	}
 }
 
+// opening starts a new game and returns the state its first turn stored.
+func opening(t *testing.T, runner *Runner, id string) (*Entry, []byte) {
+	t.Helper()
+
+	entry := testEntry(t, id)
+
+	result, err := runner.Start(t.Context(), entry)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if len(result.State) == 0 {
+		t.Fatal("Start() returned no state; there is nothing to run against")
+	}
+	return entry, result.State
+}
+
+// The turn cycle end to end: every command below runs in a machine built from
+// nothing but the story and the bytes the previous turn returned.
+func TestRunPlaysASequence(t *testing.T) {
+	runner := NewRunner()
+	entry, state := opening(t, runner, "zork1")
+
+	turns := []struct {
+		command string
+		output  string
+		room    string
+		score   int16
+	}{
+		{command: "open mailbox", output: "reveals a leaflet", room: "West of House"},
+		{command: "read leaflet", output: "WELCOME TO ZORK", room: "West of House"},
+		{command: "north", output: "North of House", room: "North of House"},
+		{command: "east", output: "Behind House", room: "Behind House"},
+		{command: "open window", output: "the window", room: "Behind House"},
+		{command: "enter window", output: "Kitchen", room: "Kitchen", score: 10},
+	}
+
+	for i, tt := range turns {
+		result, err := runner.Run(t.Context(), entry, state, tt.command)
+		if err != nil {
+			t.Fatalf("Run(%q) error = %v", tt.command, err)
+		}
+
+		if result.Status != zmachine.WaitingForInput {
+			t.Fatalf("Run(%q) Status = %v, want %v", tt.command, result.Status, zmachine.WaitingForInput)
+		}
+		if !strings.Contains(result.Output, tt.output) {
+			t.Errorf("Run(%q) Output = %q, want it to contain %q", tt.command, result.Output, tt.output)
+		}
+		if result.StatusLine.Name != tt.room {
+			t.Errorf("Run(%q) StatusLine.Name = %q, want %q", tt.command, result.StatusLine.Name, tt.room)
+		}
+		if result.StatusLine.Score != tt.score {
+			t.Errorf("Run(%q) StatusLine.Score = %d, want %d", tt.command, result.StatusLine.Score, tt.score)
+		}
+		if got, want := result.StatusLine.Turns, int16(i+1); got != want {
+			t.Errorf("Run(%q) StatusLine.Turns = %d, want %d", tt.command, got, want)
+		}
+		if len(result.State) == 0 {
+			t.Fatalf("Run(%q) returned no state", tt.command)
+		}
+
+		state = result.State
+	}
+}
+
+// A state only restores into the story it was written from. Getting this wrong
+// would decode one game's memory against another's.
+func TestRunRejectsStateFromAnotherStory(t *testing.T) {
+	runner := NewRunner()
+	_, state := opening(t, runner, "zork1")
+
+	result, err := runner.Run(t.Context(), testEntry(t, "zork2"), state, "look")
+	if err == nil {
+		t.Fatal("Run() = nil error, want the state to be refused")
+	}
+	if got := Classify(err); got != FaultInvalidState {
+		t.Errorf("Classify() = %v, want %v", got, FaultInvalidState)
+	}
+	assertResultDiscarded(t, result)
+}
+
+// Stored state is untrusted input even though this server wrote it: it may have
+// been damaged in storage or in transit.
+func TestRunRejectsDamagedState(t *testing.T) {
+	runner := NewRunner()
+	entry, state := opening(t, runner, "zork1")
+
+	corrupt := make([]byte, len(state))
+	copy(corrupt, state)
+	for i := range corrupt {
+		corrupt[i] ^= 0xff
+	}
+
+	truncated := state[:len(state)/2]
+
+	tests := []struct {
+		name  string
+		state []byte
+	}{
+		{name: "not a saved state", state: []byte("this is not a saved game")},
+		{name: "bits flipped", state: corrupt},
+		{name: "truncated", state: truncated},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := runner.Run(t.Context(), entry, tt.state, "look")
+			if err == nil {
+				t.Fatal("Run() = nil error, want the state to be refused")
+			}
+			if got := Classify(err); got != FaultInvalidState {
+				t.Errorf("Classify() = %v, want %v", got, FaultInvalidState)
+			}
+			assertResultDiscarded(t, result)
+		})
+	}
+}
+
+func TestRunRejectsBadArguments(t *testing.T) {
+	runner := NewRunner()
+	entry, state := opening(t, runner, "zork1")
+
+	tests := []struct {
+		name    string
+		story   *Entry
+		state   []byte
+		command string
+	}{
+		{name: "nil story", story: nil, state: state, command: "look"},
+		{name: "nil state", story: entry, state: nil, command: "look"},
+		{name: "empty state", story: entry, state: []byte{}, command: "look"},
+		{name: "overlong command", story: entry, state: state, command: strings.Repeat("x", MaxCommandBytes+1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := runner.Run(t.Context(), tt.story, tt.state, tt.command)
+			if err == nil {
+				t.Fatal("Run() = nil error, want failure")
+			}
+			assertResultDiscarded(t, result)
+		})
+	}
+}
+
+// A command at exactly the limit is the player's to make. The story's own
+// buffer will do whatever it does with it; that is the story's business.
+func TestRunAcceptsACommandAtTheLimit(t *testing.T) {
+	runner := NewRunner()
+	entry, state := opening(t, runner, "zork1")
+
+	if _, err := runner.Run(t.Context(), entry, state, strings.Repeat("x", MaxCommandBytes)); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestRunHonorsItsBounds(t *testing.T) {
+	entry, state := opening(t, NewRunner(), "zork1")
+
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	expired, cancelExpired := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+
+	tests := []struct {
+		name   string
+		ctx    context.Context
+		runner *Runner
+		want   Fault
+	}{
+		{name: "cancellation", ctx: canceled, runner: NewRunner(), want: FaultCanceled},
+		{name: "deadline", ctx: expired, runner: NewRunner(), want: FaultTimeout},
+		{name: "caller's nearer deadline", ctx: expired, runner: NewRunner(WithTurnTimeout(time.Minute)), want: FaultTimeout},
+		{name: "instruction limit", ctx: t.Context(), runner: NewRunner(WithInstructionLimit(1)), want: FaultExecutionLimit},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tt.runner.Run(tt.ctx, entry, state, "look")
+			if err == nil {
+				t.Fatal("Run() = nil error, want failure")
+			}
+			if got := Classify(err); got != tt.want {
+				t.Errorf("Classify() = %v, want %v", got, tt.want)
+			}
+			assertResultDiscarded(t, result)
+		})
+	}
+}
+
+// A story that ends itself returns no state, and a caller must not store the
+// nil over a good one unless the session is deliberately being closed.
+func TestRunHalts(t *testing.T) {
+	runner := NewRunner()
+	entry, state := opening(t, runner, "zork1")
+
+	confirm, err := runner.Run(t.Context(), entry, state, "quit")
+	if err != nil {
+		t.Fatalf("Run(quit) error = %v", err)
+	}
+	if confirm.Status != zmachine.WaitingForInput {
+		t.Fatalf("Run(quit) Status = %v, want the confirmation prompt", confirm.Status)
+	}
+
+	result, err := runner.Run(t.Context(), entry, confirm.State, "yes")
+	if err != nil {
+		t.Fatalf("Run(yes) error = %v", err)
+	}
+	if result.Status != zmachine.Halted {
+		t.Fatalf("Run(yes) Status = %v, want %v", result.Status, zmachine.Halted)
+	}
+	if result.State != nil {
+		t.Errorf("a halted story returned %d bytes of state", len(result.State))
+	}
+}
+
+func TestRunIsReproducibleWithASeed(t *testing.T) {
+	entry, state := opening(t, NewRunner(WithRandomSeed(1988)), "zork1")
+
+	first, err := NewRunner(WithRandomSeed(1988)).Run(t.Context(), entry, state, "look")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	second, err := NewRunner(WithRandomSeed(1988)).Run(t.Context(), entry, state, "look")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if first.Output != second.Output {
+		t.Errorf("same seed produced different output:\n%q\n%q", first.Output, second.Output)
+	}
+	if !bytes.Equal(first.State, second.State) {
+		t.Error("same seed produced different state")
+	}
+}
+
 // A failed turn must leave nothing worth storing. The engine returns a zero
 // Result on these paths and the Runner passes that through unchanged, because a
 // caller that stored a partial result would overwrite a good state with one that
