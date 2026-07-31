@@ -426,6 +426,8 @@ SQLite is authoritative for:
 
 Enable WAL mode during database initialization.
 
+Database creation is explicit. `zorkd init [-database path]` is the sole creation path; it refuses an existing file, applies migrations, and prints the absolute path it created. The server and `zorkd invite` open only an existing database and report the absolute path plus the `zorkd init` remedy when it is missing.
+
 Use transactions where game-state updates require atomicity.
 
 ### 7.2 Suggested schema

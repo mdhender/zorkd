@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"path/filepath"
 
 	"github.com/mdhender/zorkd/internal/auth"
@@ -21,9 +23,8 @@ import (
 // — the database holds only its SHA-256 — so a lost invitation is reissued
 // rather than looked up.
 //
-// It opens the database itself rather than talking to a running server, which
-// means it can be run before the server is started and needs no authenticated
-// route to protect.
+// It opens an initialized database itself rather than talking to a running
+// server, so it needs no authenticated route to protect.
 func runInvite(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("zorkd invite", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -63,16 +64,18 @@ func runInvite(args []string, stdout, stderr io.Writer) error {
 	ctx := context.Background()
 
 	// The absolute path is in the error for the same reason the server logs it:
-	// -database defaults to a relative one, and run from the wrong directory
-	// this would otherwise create a second, empty database and write the
-	// invitation into a file nobody serves.
+	// -database defaults to a relative one, and may otherwise name the wrong
+	// file when this command is run from another directory.
 	dbFile, err := filepath.Abs(*dbPath)
 	if err != nil {
 		return fmt.Errorf("database %s: %w", *dbPath, err)
 	}
 
-	db, err := database.Open(ctx, dbFile)
+	db, err := database.Open(ctx, dbFile, false)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return missingDatabaseError(dbFile)
+		}
 		return err
 	}
 	defer func() { _ = db.Close() }()

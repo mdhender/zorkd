@@ -168,12 +168,22 @@ Sessions are keyed by a SHA-256 over the story image. Release and serial identif
 ## Running the Server
 
 ```text
+$ go run ./cmd/zorkd init
 $ go run ./cmd/zorkd
+$ go run ./cmd/zorkd init -database /var/lib/zorkd/zorkd.db
 $ go run ./cmd/zorkd -addr :8080 -database /var/lib/zorkd/zorkd.db
 $ go run ./cmd/zorkd -insecure-cookies        # local development over plain HTTP
 ```
 
-The server needs nothing else. The story files, the templates and the assets are embedded, the database is created on first run, and the schema is brought up to date when it opens.
+The story files, templates and assets are embedded. Database creation is deliberate: run `zorkd init` once before serving or issuing invitations. `serve` and `invite` refuse a missing database rather than silently creating one, while every successful open brings its schema up to date.
+
+### Initializing the database
+
+`zorkd init` is the only command that creates a database. It applies all migrations, prints the absolute path it created, and refuses an existing path without changing it.
+
+| Flag | Environment | Default | Format | Sets |
+| ---- | ----------- | ------- | ------ | ---- |
+| `-database` | `ZORK_DATABASE` | `zorkd.db` | filesystem path | the new SQLite database to create and migrate |
 
 ### Server flags
 
@@ -182,7 +192,7 @@ Every setting is read once, at startup. A flag wins over the environment, and a 
 | Flag | Environment | Default | Format | Sets |
 | ---- | ----------- | ------- | ------ | ---- |
 | `-addr` | `ZORK_ADDR` | `localhost:8080` | `host:port`, as `net.Listen` takes it | the address to listen on |
-| `-database` | `ZORK_DATABASE` | `zorkd.db` | filesystem path | the SQLite database, created and migrated when it is opened |
+| `-database` | `ZORK_DATABASE` | `zorkd.db` | filesystem path | the existing SQLite database to open and migrate |
 | `-turn-timeout` | `ZORK_TURN_TIMEOUT` | `5s` | a `time.ParseDuration` string | the wall-clock bound on one turn |
 | `-instruction-limit` | `ZORK_INSTRUCTION_LIMIT` | `5000000` | a plain unsigned integer | the instruction bound on one turn |
 | `-insecure-cookies` | — | `false` | a boolean flag | whether session cookies drop the `Secure` attribute |
@@ -190,7 +200,7 @@ Every setting is read once, at startup. A flag wins over the environment, and a 
 
 **The listen default is loopback rather than `:8080`.** A server started with no arguments is reachable from this machine and from nowhere else. That is what a development run wants, and it is also what a deployment wants — see [Deployment](#deployment) for why the listener must not be public — but a first attempt to reach it from another host will find nothing there, and this is why.
 
-`-database` is resolved against the working directory when it is relative, so the absolute path is logged as the database opens. A server started in the wrong directory otherwise opens a different, empty database and says nothing about it until somebody wonders where their account went.
+`-database` is resolved against the working directory when it is relative, so the absolute path is logged as the database opens. A server started in the wrong directory refuses to start and gives the exact `zorkd init` command for that absolute path.
 
 `-insecure-cookies` drops the `Secure` attribute so a session survives plain HTTP. It exists for local development, and a deployment that serves over HTTPS must not use it — which is why the safe setting is the default and the unsafe one has to be asked for by name. Given together with a listener bound to anything but loopback it is refused, and the server does not start.
 
@@ -208,7 +218,7 @@ https://zork.example.com/register?invite=RiQ0…
 | `-database` | `ZORK_DATABASE` | `zorkd.db` | filesystem path | the database the invitation is written to |
 | `-base-url` | `ZORK_BASE_URL` | `http://localhost:8080` | an absolute URL with a host | where this server is reached, for the printed link |
 
-The subcommand takes exactly one argument, the address the invitation is for, and it opens the database itself rather than talking to a running server — so it can be run before the server is started. That printed line is the only place the token ever exists: the database holds only its SHA-256, so a lost invitation is reissued rather than looked up.
+The subcommand takes exactly one argument, the address the invitation is for, and it opens an initialized database itself rather than talking to a running server — so it can be run before the server is started. That printed line is the only place the token ever exists: the database holds only its SHA-256, so a lost invitation is reissued rather than looked up.
 
 ### Fixed timeouts
 
@@ -302,7 +312,7 @@ Passing the client's `Host` through means a catch-all server block should refuse
 
 ### systemd
 
-The unit file is `deploy/zorkd.service`. Copy it to `/etc/systemd/system/zorkd.service`, adjust `ExecStart`, then `systemctl daemon-reload && systemctl enable --now zorkd`.
+The unit file is `deploy/zorkd.service`. Create the state directory and initialize the database once with permissions suitable for the service user, then copy it to `/etc/systemd/system/zorkd.service`, adjust `ExecStart`, and run `systemctl daemon-reload && systemctl enable --now zorkd`.
 
 ```ini
 [Unit]
@@ -346,7 +356,7 @@ An unset `NOTIFY_SOCKET` means nothing is listening, so the notification is skip
 
 **`AF_UNIX` in `RestrictAddressFamilies` is not decoration.** The notify socket is a unix datagram socket. Leave `AF_UNIX` out and readiness never arrives, the unit fails to start on its start timeout, and nothing in the journal explains it. This is the first thing to check when `Type=notify` times out.
 
-**`StateDirectory=zorkd` is where the database belongs.** With `DynamicUser=yes` it creates `/var/lib/zorkd` owned by the transient user, and `ProtectSystem=strict` leaves it as the only writable path. That also settles the relative-path question: `-database` defaults to `zorkd.db`, resolved against whatever the working directory turned out to be, and a server started in the wrong place opens a different, empty database. An absolute path in a directory that is guaranteed to exist has neither problem. The *directory* has to be writable and not just the file, because WAL mode writes `-wal` and `-shm` beside the database — `StateDirectory` gives that, while a hand-rolled `ReadWritePaths=` naming only the file does not.
+**`StateDirectory=zorkd` is where the database belongs.** With `DynamicUser=yes` it creates `/var/lib/zorkd` owned by the transient user, and `ProtectSystem=strict` leaves it as the only writable path. That also settles the relative-path question: `-database` defaults to `zorkd.db`, resolved against whatever the working directory turned out to be, and a server started in the wrong place refuses a missing database. An absolute initialized path in a directory that is guaranteed to exist has neither problem. The *directory* has to be writable and not just the file, because WAL mode writes `-wal` and `-shm` beside the database — `StateDirectory` gives that, while a hand-rolled `ReadWritePaths=` naming only the file does not.
 
 `TimeoutStopSec=30s` is stated against a shutdown timeout of ten seconds. The 90-second default would also do, but naming it means a later change to the shutdown timeout collides with a number somebody can see. `After=network.target` rather than `network-online.target`: the listener is loopback and does not wait for an address.
 

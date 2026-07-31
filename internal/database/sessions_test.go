@@ -471,7 +471,7 @@ func TestGameSurvivesAServerRestart(t *testing.T) {
 		t.Fatalf("Embedded() error = %v", err)
 	}
 
-	first := openAt(t, path)
+	first := openAt(t, path, true)
 	owner := testUser(t, first, "player@example.com")
 
 	service, err := game.NewService(library, game.NewRunner(), first.Sessions())
@@ -496,7 +496,7 @@ func TestGameSurvivesAServerRestart(t *testing.T) {
 	}
 
 	// A different process, with nothing in common but the file.
-	second := openAt(t, path)
+	second := openAt(t, path, false)
 	resumed, err := game.NewService(library, game.NewRunner(), second.Sessions())
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)

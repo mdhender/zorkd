@@ -52,14 +52,16 @@ func main() {
 // run dispatches a subcommand, or serves when there is none.
 //
 // A subcommand is a first argument that is not a flag, so `zorkd -addr ...`
-// still means what it always did and nothing about serving moved. There is one
-// subcommand and no framework beneath it: `zorkd invite` writes a row and
-// prints a link, which is the whole of the administration this deployment has.
+// still means what it always did and nothing about serving moved. The two small
+// subcommands need no framework: init creates the store, and invite writes one
+// row and prints its link.
 func run(args []string, stderr io.Writer) error {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "invite":
 			return runInvite(args[1:], os.Stdout, stderr)
+		case "init":
+			return runInit(args[1:], os.Stdout, stderr)
 		default:
 			return fmt.Errorf("unknown subcommand %q", args[0])
 		}
@@ -90,7 +92,7 @@ func serve(args []string, stderr io.Writer) error {
 	)
 
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: zorkd [flags]\n       zorkd invite [flags] address\n\nServes Zork I, II and III over HTTP.\n\nFlags:\n")
+		fmt.Fprintf(stderr, "usage: zorkd [flags]\n       zorkd init [flags]\n       zorkd invite [flags] address\n\nServes Zork I, II and III over HTTP.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 
@@ -131,17 +133,18 @@ func serve(args []string, stderr io.Writer) error {
 	}
 
 	// The absolute path is logged because -database defaults to a relative one:
-	// a server started in the wrong directory opens a different, empty database
-	// and otherwise says nothing about it until somebody wonders where their
-	// account went.
+	// a server started in the wrong directory must identify the missing file.
 	dbFile, err := filepath.Abs(*dbPath)
 	if err != nil {
 		return fmt.Errorf("database %s: %w", *dbPath, err)
 	}
 	logger.Info("opening the database", "path", dbFile)
 
-	db, err := database.Open(ctx, dbFile)
+	db, err := database.Open(ctx, dbFile, false)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return missingDatabaseError(dbFile)
+		}
 		return err
 	}
 	defer func() {

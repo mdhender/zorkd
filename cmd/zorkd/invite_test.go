@@ -37,7 +37,7 @@ func redeemable(t *testing.T, dbPath, link string) string {
 	}
 
 	ctx := context.Background()
-	db, err := database.Open(ctx, dbPath)
+	db, err := database.Open(ctx, dbPath, false)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -57,6 +57,9 @@ func redeemable(t *testing.T, dbPath, link string) string {
 
 func TestRunInvitePrintsALinkOnce(t *testing.T) {
 	dbPath := testDBPath(t)
+	if err := runInit([]string{"-database", dbPath}, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runInit() error = %v", err)
+	}
 
 	var stdout bytes.Buffer
 	args := []string{"-database", dbPath, "-base-url", "https://example.com", "  Player@Example.COM "}

@@ -30,7 +30,7 @@ var (
 // undocumented, and a row cannot outlive the flag it describes. The project has
 // no CI, so a test is the only thing that will ever notice either one.
 //
-// The flag sets are locals inside serve and runInvite, which is where they
+// The flag sets are locals inside serve, runInit and runInvite, which is where they
 // belong — nothing else needs them — so this reads them back the way an
 // operator would, by asking for the usage that fs.Usage prints from
 // fs.PrintDefaults. That costs a small parse and needs no restructuring, and it
@@ -59,6 +59,12 @@ func TestREADMEDocumentsEveryFlag(t *testing.T) {
 			command: "zorkd",
 			heading: "### Server flags",
 			usage:   func(stderr io.Writer) error { return run([]string{"-h"}, stderr) },
+		},
+		{
+			name:    "init",
+			command: "zorkd init",
+			heading: "### Initializing the database",
+			usage:   func(stderr io.Writer) error { return runInit([]string{"-h"}, io.Discard, stderr) },
 		},
 		{
 			name:    "invite",

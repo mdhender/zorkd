@@ -22,10 +22,10 @@ func testPath(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "zorkd.db")
 }
 
-func openAt(t *testing.T, path string) *DB {
+func openAt(t *testing.T, path string, create bool) *DB {
 	t.Helper()
 
-	db, err := Open(context.Background(), path)
+	db, err := Open(context.Background(), path, create)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -41,7 +41,7 @@ func openAt(t *testing.T, path string) *DB {
 func testDB(t *testing.T) *DB {
 	t.Helper()
 
-	return openAt(t, testPath(t))
+	return openAt(t, testPath(t), true)
 }
 
 // pragma reads a one-value PRAGMA, which is how the settings that are not
@@ -99,7 +99,7 @@ func TestOpenPreparesTheDatabase(t *testing.T) {
 func TestOpenIsRepeatable(t *testing.T) {
 	path := testPath(t)
 
-	first := openAt(t, path)
+	first := openAt(t, path, true)
 	owner := testUser(t, first, "player@example.com")
 
 	created, err := first.Sessions().Create(context.Background(), storedSession(owner))
@@ -114,7 +114,7 @@ func TestOpenIsRepeatable(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	second := openAt(t, path)
+	second := openAt(t, path, false)
 
 	after, err := second.SchemaVersion(context.Background())
 	if err != nil {
@@ -138,7 +138,7 @@ func TestOpenCreatesTheDatabaseFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "zorkd.db")
 
-	db := openAt(t, path)
+	db := openAt(t, path, true)
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -159,6 +159,43 @@ func TestOpenCreatesTheDatabaseFile(t *testing.T) {
 	if want := all[len(all)-1].Version; version != want {
 		t.Errorf("schema version = %d, want %d", version, want)
 	}
+}
+
+func TestOpenModesRefuseTheWrongFilesystemState(t *testing.T) {
+	t.Run("open requires an existing file", func(t *testing.T) {
+		path := testPath(t)
+		db, err := Open(context.Background(), path, false)
+		if err == nil {
+			_ = db.Close()
+			t.Fatal("Open(create=false) succeeded for a missing file")
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("error = %v, want fs.ErrNotExist", err)
+		}
+		if _, statErr := os.Stat(path); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("refusal created %s", path)
+		}
+	})
+
+	t.Run("create refuses an existing file", func(t *testing.T) {
+		path := testPath(t)
+		want := []byte("unchanged")
+		if err := os.WriteFile(path, want, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		db, err := Open(context.Background(), path, true)
+		if err == nil {
+			_ = db.Close()
+			t.Fatal("Open(create=true) succeeded for an existing file")
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			t.Errorf("error = %v, want fs.ErrExist", err)
+		}
+		got, readErr := os.ReadFile(path)
+		if readErr != nil || string(got) != string(want) {
+			t.Errorf("existing contents = %q, %v; want %q", got, readErr, want)
+		}
+	})
 }
 
 // Open must report a path it cannot use and leave the filesystem alone. The
@@ -222,7 +259,7 @@ func TestOpenRejectsABadPathAndCreatesNothing(t *testing.T) {
 			path := tt.setup(t, root)
 			before := treeOf(t, root)
 
-			db, err := Open(context.Background(), path)
+			db, err := Open(context.Background(), path, true)
 			if err == nil {
 				t.Errorf("Open(%s) = nil error, want failure", path)
 				if err := db.Close(); err != nil {

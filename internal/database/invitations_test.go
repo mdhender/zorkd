@@ -242,7 +242,7 @@ func TestInvitationsRefuseAnExpiredToken(t *testing.T) {
 func TestInvitationTokenIsNowhereInTheDatabase(t *testing.T) {
 	ctx := context.Background()
 	path := testPath(t)
-	db := openAt(t, path)
+	db := openAt(t, path, true)
 
 	token, err := testInvitations(t, db).Create(ctx, "player@example.com")
 	if err != nil {

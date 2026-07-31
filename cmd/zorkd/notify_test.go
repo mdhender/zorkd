@@ -150,7 +150,11 @@ func TestRunReportsBindFailure(t *testing.T) {
 	defer func() { _ = held.Close() }()
 
 	addr := held.Addr().String()
-	args := []string{"-addr", addr, "-database", filepath.Join(t.TempDir(), "zorkd.db")}
+	dbPath := filepath.Join(t.TempDir(), "zorkd.db")
+	if err := runInit([]string{"-database", dbPath}, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runInit() error = %v", err)
+	}
+	args := []string{"-addr", addr, "-database", dbPath}
 
 	err = run(args, io.Discard)
 	if err == nil {
