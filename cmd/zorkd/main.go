@@ -94,7 +94,13 @@ func run(args []string, stderr io.Writer) error {
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// SIGHUP stops the server, exactly as SIGINT and SIGTERM do. It is not a
+	// reload: zorkd has no reloadable configuration — every setting is a flag or
+	// an environment variable read once, here — so there is nothing for a hangup
+	// to refresh, and leaving it to Go's default disposition would kill the
+	// process mid-turn with no shutdown at all. A unit file therefore carries no
+	// ExecReload= and must not be Type=notify-reload.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 
 	// The story files are validated once, here, so a server that comes up is a
@@ -173,10 +179,21 @@ func run(args []string, stderr io.Writer) error {
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 
+	// The listener is bound here rather than inside ListenAndServe so that
+	// readiness can be reported after the socket exists and not before, and so
+	// that a port already in use is an error on the line that caused it instead
+	// of one racing a cancelled context out of a goroutine.
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", *addr, err)
+	}
+
+	logger.Info("listening", "addr", ln.Addr().String(), "stories", library.Len())
+	notifyServiceManager(logger, notifyReady)
+
 	failed := make(chan error, 1)
 	go func() {
-		logger.Info("listening", "addr", *addr, "stories", library.Len())
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			failed <- err
 		}
 		close(failed)
@@ -185,7 +202,7 @@ func run(args []string, stderr io.Writer) error {
 	select {
 	case err := <-failed:
 		if err != nil {
-			return fmt.Errorf("listen on %s: %w", *addr, err)
+			return fmt.Errorf("serve on %s: %w", *addr, err)
 		}
 		return nil
 	case <-ctx.Done():
@@ -195,6 +212,7 @@ func run(args []string, stderr io.Writer) error {
 	// off here writes nothing, and the state from the previous turn is still
 	// the good one.
 	logger.Info("shutting down")
+	notifyServiceManager(logger, notifyStopping)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()

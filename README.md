@@ -253,6 +253,68 @@ Passing the client's `Host` through means a catch-all server block should refuse
 
 `proxy_read_timeout` needs no adjustment: its 60-second default already outlasts a turn, which is bounded at five seconds by the game service and thirty by the server's own write timeout.
 
+### systemd
+
+The unit file is `deploy/zorkd.service`. Copy it to `/etc/systemd/system/zorkd.service`, adjust `ExecStart`, then `systemctl daemon-reload && systemctl enable --now zorkd`.
+
+```ini
+[Unit]
+Description=zorkd — the Zork trilogy as durable web sessions
+Documentation=https://github.com/mdhender/zorkd
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/bin/zorkd -addr 127.0.0.1:8080 -database /var/lib/zorkd/zorkd.db
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+DynamicUser=yes
+StateDirectory=zorkd
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`Type=notify` is what makes ordering mean anything. The server sends `READY=1` to the socket named by `$NOTIFY_SOCKET` once the listener is bound, and `STOPPING=1` when a shutdown begins, so a stop that takes a moment reads as deliberate rather than as a unit going quiet. Without it the unit could only be `Type=exec`, and systemd would consider the service started the moment the binary execs — before anything is listening, and with `nginx.service` free to be ordered after a server that is not up yet. With `Type=notify`, `nginx.service` can be ordered `After=zorkd.service` and mean it.
+
+An unset `NOTIFY_SOCKET` means nothing is listening, so the notification is skipped and the server starts normally outside systemd. A notification that fails is logged and not fatal: a server that works but failed to announce itself is more useful than one that refuses to start over it, and `TimeoutStartSec` ends the unit anyway with the log line already saying why.
+
+**`AF_UNIX` in `RestrictAddressFamilies` is not decoration.** The notify socket is a unix datagram socket. Leave `AF_UNIX` out and readiness never arrives, the unit fails to start on its start timeout, and nothing in the journal explains it. This is the first thing to check when `Type=notify` times out.
+
+**`StateDirectory=zorkd` is where the database belongs.** With `DynamicUser=yes` it creates `/var/lib/zorkd` owned by the transient user, and `ProtectSystem=strict` leaves it as the only writable path. That also settles the relative-path question: `-database` defaults to `zorkd.db`, resolved against whatever the working directory turned out to be, and a server started in the wrong place opens a different, empty database. An absolute path in a directory that is guaranteed to exist has neither problem. The *directory* has to be writable and not just the file, because WAL mode writes `-wal` and `-shm` beside the database — `StateDirectory` gives that, while a hand-rolled `ReadWritePaths=` naming only the file does not.
+
+`TimeoutStopSec=30s` is stated against a shutdown timeout of ten seconds. The 90-second default would also do, but naming it means a later change to the shutdown timeout collides with a number somebody can see. `After=network.target` rather than `network-online.target`: the listener is loopback and does not wait for an address.
+
+`MemoryDenyWriteExecute=yes` should be compatible with a Go binary, which does not generate code at run time, and is worth adding — but it has not been verified against this binary on a systemd host, so it is left out of the unit rather than shipped on the strength of the argument. Verify it on the target before adding it.
+
+Be careful with `MemoryMax=`. Argon2id allocates 9 MiB per concurrent hash, so a limit set without headroom for the logins in flight turns password verification into an OOM kill rather than a slow login.
+
+### Signals
+
+`SIGINT`, `SIGTERM` and `SIGHUP` all stop the server gracefully. In-flight turns are given ten seconds to finish and persist, the database pool closes after connections have drained, and the process exits 0. systemd's default `KillSignal=SIGTERM` already matches.
+
+**None of them reloads anything.** `zorkd` has no reloadable configuration — every setting is a flag or an environment variable read once at startup — so `SIGHUP` stops the server rather than either killing it mid-turn or pretending to refresh something. That is why the unit carries no `ExecReload=` and is not `Type=notify-reload`: a unit that reloaded by sending `SIGHUP` would be stopping the server while telling systemd it had refreshed it.
+
+While the shutdown is running the signal handlers are still installed, so a **second `SIGTERM` is swallowed** rather than hurrying anything along. An operator who wants it to stop *now* needs `SIGKILL`.
+
 ## The Web Terminal
 
 The game page is text on a dark screen: a status bar, a scrolling transcript, and a command line with the cursor beside the prompt.

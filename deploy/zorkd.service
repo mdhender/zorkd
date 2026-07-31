@@ -1,0 +1,38 @@
+[Unit]
+Description=zorkd — the Zork trilogy as durable web sessions
+Documentation=https://github.com/mdhender/zorkd
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/bin/zorkd -addr 127.0.0.1:8080 -database /var/lib/zorkd/zorkd.db
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+DynamicUser=yes
+StateDirectory=zorkd
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+# MemoryDenyWriteExecute=yes should be compatible with a Go binary, which does
+# not generate code at run time, and is worth adding — but it has not been
+# verified against this binary on a systemd host, so it is left out rather than
+# shipped on the strength of the argument. Verify on the target and add it.
+
+[Install]
+WantedBy=multi-user.target
