@@ -303,6 +303,108 @@ func TestSourceKeyIsTheHost(t *testing.T) {
 	}
 }
 
+// mustProxies parses a trusted-proxy list a test controls.
+func mustProxies(t *testing.T, list string) trustedProxies {
+	t.Helper()
+	prefixes, err := ParseTrustedProxies(list)
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies(%q) error = %v", list, err)
+	}
+	return trustedProxies(prefixes)
+}
+
+// requestFrom builds a request from a peer, with an optional X-Forwarded-For
+// chain given as one or more header values.
+func requestFrom(peer string, forwarded ...string) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	r.RemoteAddr = peer
+	for _, value := range forwarded {
+		r.Header.Add("X-Forwarded-For", value)
+	}
+	return r
+}
+
+func TestParseTrustedProxies(t *testing.T) {
+	t.Run("CIDRs, bare IPs, and blanks", func(t *testing.T) {
+		got, err := ParseTrustedProxies(" 127.0.0.1 , 10.0.0.0/8 ,, ::1 ")
+		if err != nil {
+			t.Fatalf("error = %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("parsed %d prefixes, want 3: %v", len(got), got)
+		}
+	})
+
+	t.Run("empty is no proxies", func(t *testing.T) {
+		got, err := ParseTrustedProxies("")
+		if err != nil || len(got) != 0 {
+			t.Fatalf("ParseTrustedProxies(\"\") = %v, %v; want empty, nil", got, err)
+		}
+	})
+
+	t.Run("a malformed entry is refused", func(t *testing.T) {
+		if _, err := ParseTrustedProxies("127.0.0.1, not-an-ip"); err == nil {
+			t.Fatal("ParseTrustedProxies() accepted a malformed entry, want an error")
+		}
+	})
+}
+
+// clientIP reads X-Forwarded-For only for a request whose direct peer is a
+// trusted proxy, and then only as far as the trust reaches.
+func TestClientIPPeelsThroughTrustedProxiesOnly(t *testing.T) {
+	tests := []struct {
+		name      string
+		trusted   string
+		peer      string
+		forwarded []string
+		want      string
+	}{
+		{"no proxies configured ignores the header", "", "127.0.0.1:5000", []string{"203.0.113.7"}, "127.0.0.1"},
+		{"an untrusted peer ignores the header", "127.0.0.1/32", "203.0.113.9:5000", []string{"203.0.113.7"}, "203.0.113.9"},
+		{"a trusted peer, one hop", "127.0.0.1/32", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
+		{"a forged left prefix is never reached", "127.0.0.1/32", "127.0.0.1:5000", []string{"1.2.3.4, 203.0.113.7"}, "203.0.113.7"},
+		{"the walk peels every trusted hop", "10.0.0.0/8", "10.0.0.2:5000", []string{"203.0.113.7, 10.0.0.9"}, "203.0.113.7"},
+		{"an absent chain falls back to the peer", "127.0.0.1/32", "127.0.0.1:5000", nil, "127.0.0.1"},
+		{"an all-trusted chain falls back to the peer", "10.0.0.0/8", "10.0.0.2:5000", []string{"10.0.0.9"}, "10.0.0.2"},
+		{"CIDR membership admits the peer", "192.0.2.0/24", "192.0.2.50:5000", []string{"203.0.113.7"}, "203.0.113.7"},
+		{"a mapped IPv6 client is normalized", "127.0.0.1/32", "127.0.0.1:5000", []string{"::ffff:203.0.113.7"}, "203.0.113.7"},
+		{"several header lines are one chain", "127.0.0.1/32", "127.0.0.1:5000", []string{"1.2.3.4", "203.0.113.7"}, "203.0.113.7"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mustProxies(t, tt.trusted).clientIP(requestFrom(tt.peer, tt.forwarded...))
+			if got != tt.want {
+				t.Errorf("clientIP() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The point of the whole change: two clients arriving through one trusted proxy
+// get independent source buckets, where reading only the peer would pool them.
+func TestAttemptLimitSeesPastATrustedProxy(t *testing.T) {
+	limit := &attemptLimit{
+		source:   newLimiter(1, time.Minute, 64),
+		email:    newLimiter(5, time.Minute, 64),
+		clientIP: mustProxies(t, "127.0.0.1/32").clientIP,
+	}
+
+	first := requestFrom("127.0.0.1:5000", "203.0.113.1")
+	if _, ok := limit.allow(first, "a@example.com"); !ok {
+		t.Fatal("the first client was refused inside its burst")
+	}
+	if _, ok := limit.allow(first, "a@example.com"); ok {
+		t.Fatal("the first client's source bucket was not spent")
+	}
+
+	// Same proxy, a different forwarded client: its own bucket, so allowed.
+	second := requestFrom("127.0.0.1:5000", "203.0.113.2")
+	if _, ok := limit.allow(second, "b@example.com"); !ok {
+		t.Error("a second client through the same proxy shared the first's bucket")
+	}
+}
+
 // failLogin posts a wrong password and returns the response.
 func failLogin(c *client, email string) *httptest.ResponseRecorder {
 	c.t.Helper()

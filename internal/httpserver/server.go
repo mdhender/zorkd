@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 
 	"github.com/mdhender/zorkd/internal/auth"
 	"github.com/mdhender/zorkd/internal/game"
@@ -42,11 +43,30 @@ type Server struct {
 	// session, which is a bound of its own.
 	logins        *attemptLimit
 	registrations *attemptLimit
+
+	// trusted names the proxies whose X-Forwarded-For may be believed when
+	// attributing a request to a source. Empty means the source is always the
+	// direct peer.
+	trusted trustedProxies
+}
+
+// An Option adjusts a Server at construction.
+type Option func(*Server)
+
+// WithTrustedProxies names the proxy addresses whose X-Forwarded-For may be
+// believed when attributing a request to a source for rate limiting. Parse the
+// list with [ParseTrustedProxies].
+//
+// With none set, the forwarded chain is ignored and the source is always the
+// direct peer — which behind a reverse proxy is the proxy, so every player
+// would share one bucket. Naming the proxy is what lets the limiter see past it.
+func WithTrustedProxies(prefixes []netip.Prefix) Option {
+	return func(s *Server) { s.trusted = trustedProxies(prefixes) }
 }
 
 // New returns a Server. Every dependency is required except the logger, which
 // defaults to discarding.
-func New(games *game.Service, accounts *auth.Service, sessions *session.Manager, invitations *invite.Service, library *game.Library, healthProbe *Probe, logger *slog.Logger) (*Server, error) {
+func New(games *game.Service, accounts *auth.Service, sessions *session.Manager, invitations *invite.Service, library *game.Library, healthProbe *Probe, logger *slog.Logger, opts ...Option) (*Server, error) {
 	switch {
 	case games == nil:
 		return nil, errors.New("httpserver: nil game service")
@@ -70,7 +90,7 @@ func New(games *game.Service, accounts *auth.Service, sessions *session.Manager,
 		return nil, err
 	}
 
-	return &Server{
+	s := &Server{
 		games:       games,
 		accounts:    accounts,
 		sessions:    sessions,
@@ -88,7 +108,21 @@ func New(games *game.Service, accounts *auth.Service, sessions *session.Manager,
 			source: newLimiter(registerBurst, registerRefill, maxTrackedKeys),
 			email:  newLimiter(registerEmailBurst, registerEmailRefill, maxTrackedKeys),
 		},
-	}, nil
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	// Both limited routes attribute a request to a source the same way, reading
+	// the forwarded chain only for a request that arrived through a configured
+	// trusted proxy. With none configured this is the direct peer, exactly as
+	// before.
+	resolve := s.trusted.clientIP
+	s.logins.clientIP = resolve
+	s.registrations.clientIP = resolve
+
+	return s, nil
 }
 
 // Handler returns the routes, wrapped in the protections every request needs.
