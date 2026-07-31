@@ -161,6 +161,20 @@ func (db *DB) Close() error {
 	return nil
 }
 
+// Ping verifies that the pool can provide a connection and execute a trivial
+// query. The supplied context bounds both operations.
+func (db *DB) Ping(ctx context.Context) error {
+	conn, release, err := db.conn(ctx)
+	if err != nil {
+		return fmt.Errorf("database: ping: %w", err)
+	}
+	defer release()
+	if err := sqlitex.ExecuteTransient(conn, "SELECT 1;", nil); err != nil {
+		return fmt.Errorf("database: ping: %w", err)
+	}
+	return nil
+}
+
 // Sessions returns the store of games in progress.
 func (db *DB) Sessions() *Sessions { return &Sessions{db: db} }
 

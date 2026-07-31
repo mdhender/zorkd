@@ -310,6 +310,19 @@ Passing the client's `Host` through means a catch-all server block should refuse
 
 `proxy_read_timeout` needs no adjustment: its 60-second default already outlasts a turn, which is bounded at five seconds by the game service and thirty by the server's own write timeout.
 
+### Health observation
+
+`GET /healthz` reports the cached result of a background database probe: it
+returns `200` only after a recent probe succeeded, and `503` before the first
+result, after a failure, or when the last result has become stale. The request
+itself never waits for or touches SQLite. The endpoint is unauthenticated so a
+proxy can poll it; this does not change the requirement that the zorkd listener
+be reachable only by the trusted proxy over loopback or a private network.
+
+This is an observation surface, not a fast failover signal. A change can take
+up to the probe's one-minute timeout plus its 30-second interval to appear, and
+nothing in zorkd restarts the process or reroutes traffic based on the result.
+
 ### systemd
 
 The unit file is `deploy/zorkd.service`. Create the state directory and initialize the database once with permissions suitable for the service user, then copy it to `/etc/systemd/system/zorkd.service`, adjust `ExecStart`, and run `systemctl daemon-reload && systemctl enable --now zorkd`.
