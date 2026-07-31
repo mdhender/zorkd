@@ -319,6 +319,171 @@ func TestOneUserCannotOpenAnothersGame(t *testing.T) {
 	contains(t, owner.get("/games/"+id), "West of House")
 }
 
+// Typing RESTART asks before it throws anything away, and confirming leaves the
+// terminal showing the new game and nothing of the old one.
+func TestRestartThroughTheTerminal(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	c.play(id, "open mailbox")
+	c.play(id, "take leaflet")
+
+	asked := c.postHTMX("/games/"+id+"/input", url.Values{"command": {"restart"}})
+	if asked.Code != http.StatusOK {
+		t.Fatalf("POST input = %d, want %d", asked.Code, http.StatusOK)
+	}
+	contains(t, asked, "&gt;restart")
+	contains(t, asked, `id="prompt-area"`)
+	contains(t, asked, `hx-swap-oob="true"`)
+	contains(t, asked, "Restart this story from the beginning?")
+	contains(t, asked, `action="/games/`+id+`/restart"`)
+
+	// The question changed nothing: the game is still where it was.
+	contains(t, c.get("/games/"+id), "reveals a leaflet")
+
+	restarted := c.post("/games/"+id+"/restart", nil)
+	if restarted.Code != http.StatusSeeOther {
+		t.Fatalf("POST restart = %d, want %d: %s", restarted.Code, http.StatusSeeOther, restarted.Body.String())
+	}
+	if got := restarted.Header().Get("Location"); got != "/games/"+id {
+		t.Errorf("Location = %q, want %q", got, "/games/"+id)
+	}
+
+	page := c.get("/games/" + id)
+	body := page.Body.String()
+	for _, gone := range []string{"take leaflet", "reveals a leaflet"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the redrawn terminal still holds %q from the abandoned game", gone)
+		}
+	}
+	contains(t, page, "West of House")
+	contains(t, page, "Moves: 0")
+	contains(t, page, `id="command"`)
+}
+
+// Without JavaScript the same command still works: the confirmation is drawn on
+// the game page, with the game about to be thrown away still above it.
+func TestRestartWithoutHTMX(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	w := c.post("/games/"+id+"/input", url.Values{"command": {"restart"}})
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("POST input = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+
+	to := w.Header().Get("Location")
+	if to != "/games/"+id+"?prompt=restart" {
+		t.Fatalf("Location = %q, want the restart confirmation", to)
+	}
+
+	page := c.get(to)
+	contains(t, page, "Restart this story from the beginning?")
+	contains(t, page, `action="/games/`+id+`/restart"`)
+	contains(t, page, "West of House")
+
+	// Cancelling is a link back to the game, which still has its command line.
+	contains(t, c.get("/games/"+id), `id="command"`)
+}
+
+// An htmx client is told to navigate rather than handed a fragment: the whole
+// transcript was replaced, so the screen it would splice into is gone.
+func TestRestartTellsHTMXToRedraw(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+	c.play(id, "open mailbox")
+
+	w := c.postHTMX("/games/"+id+"/restart", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST restart = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if got := w.Header().Get("HX-Redirect"); got != "/games/"+id {
+		t.Errorf("HX-Redirect = %q, want %q", got, "/games/"+id)
+	}
+
+	if strings.Contains(c.get("/games/"+id).Body.String(), "reveals a leaflet") {
+		t.Error("the terminal still holds the abandoned game")
+	}
+}
+
+// Restarting is authorized against the game's owner like everything else, and a
+// game that is somebody else's reads as missing.
+func TestOneUserCannotRestartAnothersGame(t *testing.T) {
+	owner := newTestClient(t)
+	owner.register("player@example.com", "a good long password")
+	id := owner.startGame("zork1")
+	owner.play(id, "open mailbox")
+
+	stranger := &client{t: t, handler: owner.handler}
+	stranger.register("stranger@example.com", "another good password")
+
+	if w := stranger.post("/games/"+id+"/restart", nil); w.Code != http.StatusNotFound {
+		t.Errorf("POST restart as another user = %d, want %d", w.Code, http.StatusNotFound)
+	}
+
+	// And the owner's game did not go back to the beginning.
+	contains(t, owner.get("/games/"+id), "reveals a leaflet")
+}
+
+// A story that ended itself is exactly the one a player wants to begin again,
+// so the ended terminal offers it and the route does not refuse.
+func TestAnEndedGameCanBeRestarted(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	c.play(id, "quit")
+	c.play(id, "yes")
+
+	ended := c.get("/games/" + id)
+	contains(t, ended, "The story has ended.")
+	contains(t, ended, "/games/"+id+"?prompt=restart")
+
+	confirm := c.get("/games/" + id + "?prompt=restart")
+	contains(t, confirm, "Restart this story from the beginning?")
+
+	w := c.post("/games/"+id+"/restart", nil)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("POST restart = %d, want %d: %s", w.Code, http.StatusSeeOther, w.Body.String())
+	}
+
+	back := c.get("/games/" + id)
+	contains(t, back, `id="command"`)
+	contains(t, back, "West of House")
+	if strings.Contains(back.Body.String(), "The story has ended.") {
+		t.Error("the game is still over after restarting it")
+	}
+}
+
+// A restart throws away the game in progress and nothing else: the saves are
+// still there, and still restore.
+func TestRestartKeepsSavesThroughTheTerminal(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	c.play(id, "open mailbox")
+	c.play(id, "take leaflet")
+	c.save(id, "with leaflet")
+
+	if w := c.post("/games/"+id+"/restart", nil); w.Code != http.StatusSeeOther {
+		t.Fatalf("POST restart = %d, want %d: %s", w.Code, http.StatusSeeOther, w.Body.String())
+	}
+
+	saves := c.get("/games/" + id + "/saves")
+	contains(t, saves, "with leaflet")
+
+	if w := c.post("/games/"+id+"/saves/1/restore", nil); w.Code != http.StatusSeeOther {
+		t.Fatalf("POST restore = %d, want %d: %s", w.Code, http.StatusSeeOther, w.Body.String())
+	}
+
+	inventory := c.postHTMX("/games/"+id+"/input", url.Values{"command": {"inventory"}})
+	contains(t, inventory, "leaflet")
+}
+
 func TestLoginAndLogout(t *testing.T) {
 	c := newTestClient(t)
 	c.register("player@example.com", "a good long password")

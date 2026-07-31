@@ -169,8 +169,18 @@ func (s *Server) newGame(w http.ResponseWriter, r *http.Request, player user) {
 //
 // This is what a refresh and a fresh login both do. The state is the server's,
 // so the screen is rebuilt rather than remembered by the browser.
+//
+// The restart confirmation is this same page with a different prompt under it,
+// which is where a browser with no JavaScript is sent when the player types
+// RESTART. It is the only question asked here; the save ones live on the saves
+// route with the list they need.
 func (s *Server) showGame(w http.ResponseWriter, r *http.Request, player user) {
-	s.drawGame(w, r, player, r.PathValue("id"), "")
+	mode := ""
+	if r.URL.Query().Get("prompt") == "restart" {
+		mode = "restart"
+	}
+
+	s.drawGame(w, r, player, r.PathValue("id"), mode)
 }
 
 // drawGame renders the terminal with the prompt in the given mode.
@@ -199,8 +209,8 @@ func (s *Server) drawGame(w http.ResponseWriter, r *http.Request, player user, s
 
 	// The saves are read only when something is going to show them. An ended
 	// game shows them too, because restoring one is the way back from an
-	// ending.
-	if mode != "" || stored.Halted {
+	// ending. The restart confirmation shows none: they survive it.
+	if mode == "save" || mode == "restore" || stored.Halted {
 		saves, err := s.games.Saves(r.Context(), player.ID, stored.ID)
 		if err != nil {
 			s.fail(w, r, err)
@@ -268,8 +278,9 @@ func (s *Server) playTurn(w http.ResponseWriter, r *http.Request, player user) {
 		return
 	}
 
-	// SAVE and RESTORE were answered by the game service and never reached the
-	// engine. A bare one is a question this application still has to ask.
+	// SAVE, RESTORE and RESTART were answered by the game service and never
+	// reached the engine. A bare one is a question this application still has to
+	// ask.
 	switch {
 	case turn.Asked:
 		s.askAbout(w, r, player, sessionID, command, promptMode(turn.Intent))
@@ -296,6 +307,23 @@ func (s *Server) playTurn(w http.ResponseWriter, r *http.Request, player user) {
 	}
 
 	http.Redirect(w, r, "/games/"+sessionID, http.StatusSeeOther)
+}
+
+// restartGame begins the story again, once the player has confirmed.
+//
+// It is a POST for the same reason deletion is: a form is all a browser without
+// JavaScript can send, and this throws a game away.
+func (s *Server) restartGame(w http.ResponseWriter, r *http.Request, player user) {
+	sessionID := r.PathValue("id")
+
+	if _, err := s.games.Restart(r.Context(), player.ID, sessionID); err != nil {
+		s.turnFailed(w, r, sessionID, "restart", err)
+		return
+	}
+
+	// The whole transcript went back with the state, so there is nothing to
+	// append: the screen is redrawn from what is now stored.
+	s.redrawGame(w, r, sessionID)
 }
 
 // turnFailed reports a turn that did not happen.
