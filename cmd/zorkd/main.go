@@ -88,6 +88,7 @@ func serve(args []string, stderr io.Writer) error {
 		timeout  = fs.Duration("turn-timeout", defaultTimeout, "wall-clock bound on one turn")
 		limit    = fs.Uint64("instruction-limit", defaultLimit, "instruction bound on one turn")
 		insecure = fs.Bool("insecure-cookies", false, "drop the Secure attribute so cookies survive plain HTTP (development only)")
+		proxies  = fs.String("trusted-proxies", env("ZORK_TRUSTED_PROXIES", ""), "comma-separated CIDRs whose X-Forwarded-For the rate limiter may believe")
 		verbose  = fs.Bool("v", false, "log at debug level")
 	)
 
@@ -110,11 +111,21 @@ func serve(args []string, stderr io.Writer) error {
 		return err
 	}
 
+	// Validated here, on the same terms: a malformed list stops the server
+	// rather than silently leaving the rate limiter reading the wrong hop.
+	trusted, err := httpserver.ParseTrustedProxies(*proxies)
+	if err != nil {
+		return err
+	}
+
 	level := slog.LevelInfo
 	if *verbose {
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
+	if len(trusted) > 0 {
+		logger.Info("trusting forwarded headers from proxies", "prefixes", len(trusted))
+	}
 
 	// SIGHUP stops the server, exactly as SIGINT and SIGTERM do. It is not a
 	// reload: zorkd has no reloadable configuration — every setting is a flag or
@@ -203,7 +214,8 @@ func serve(args []string, stderr io.Writer) error {
 		<-probeDone
 	}()
 
-	server, err := httpserver.New(games, accounts, sessions, invitations, library, healthProbe, logger)
+	server, err := httpserver.New(games, accounts, sessions, invitations, library, healthProbe, logger,
+		httpserver.WithTrustedProxies(trusted))
 	if err != nil {
 		return err
 	}

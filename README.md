@@ -196,6 +196,7 @@ Every setting is read once, at startup. A flag wins over the environment, and a 
 | `-turn-timeout` | `ZORK_TURN_TIMEOUT` | `5s` | a `time.ParseDuration` string | the wall-clock bound on one turn |
 | `-instruction-limit` | `ZORK_INSTRUCTION_LIMIT` | `5000000` | a plain unsigned integer | the instruction bound on one turn |
 | `-insecure-cookies` | — | `false` | a boolean flag | whether session cookies drop the `Secure` attribute |
+| `-trusted-proxies` | `ZORK_TRUSTED_PROXIES` | _(none)_ | comma-separated CIDRs or IPs | which proxies' `X-Forwarded-For` the rate limiter may believe |
 | `-v` | — | `false` | a boolean flag | whether logging is at debug level rather than info |
 
 **The listen default is loopback rather than `:8080`.** A server started with no arguments is reachable from this machine and from nowhere else. That is what a development run wants, and it is also what a deployment wants — see [Deployment](#deployment) for why the listener must not be public — but a first attempt to reach it from another host will find nothing there, and this is why.
@@ -203,6 +204,8 @@ Every setting is read once, at startup. A flag wins over the environment, and a 
 `-database` is resolved against the working directory when it is relative, so the absolute path is logged as the database opens. A server started in the wrong directory refuses to start and gives the exact `zorkd init` command for that absolute path.
 
 `-insecure-cookies` drops the `Secure` attribute so a session survives plain HTTP. It exists for local development, and a deployment that serves over HTTPS must not use it — which is why the safe setting is the default and the unsafe one has to be asked for by name. Given together with a listener bound to anything but loopback it is refused, and the server does not start.
+
+`-trusted-proxies` names the proxies whose `X-Forwarded-For` the login and registration rate limits may believe, as a comma-separated list of CIDRs (a bare IP is one host). It is empty by default, and while it is, the forwarded header is ignored and every request is attributed to the address it arrived from — which behind a proxy is the proxy, so all players share one rate-limit bucket. Set it to the proxy's address (`127.0.0.1/32` for nginx on the same host) so the limiter reads past the proxy to the real client. Only name proxies you control: any host in this set is trusted to have set the header honestly, so trusting one that forwards a client's `X-Forwarded-For` unchanged hands every client its own bucket, which is the same as not limiting by source at all. See [Deployment](#deployment).
 
 ### Issuing an invitation
 
@@ -251,7 +254,7 @@ The proxy must:
 
 The application needs nothing in return. Session cookies are marked `Secure` by default, so it already assumes it is reached over HTTPS and does not have to be told per request — there is no `X-Forwarded-Proto` handling and none is wanted. `AddTrustedOrigin` is likewise unused, and stays that way while the terminal is served from a single origin; a second origin is where to go looking for it.
 
-One consequence is worth planning for rather than discovering. The rate limits on logging in and registering key on the address the connection came from and deliberately do not read `X-Forwarded-For`, so behind a proxy every player shares one bucket. The example configuration below sets `X-Real-IP` and `X-Forwarded-For` regardless, so the headers are already arriving when the limiter is taught which hop to trust.
+One consequence is worth handling rather than discovering. The rate limits on logging in and registering key on the address the connection came from, and by default do not read `X-Forwarded-For`, so behind a proxy every player would share one bucket. Set `-trusted-proxies` to the proxy's address — `127.0.0.1/32` for the nginx below on the same host — and the limiter reads the forwarded chain past that hop to the real client. The header is believed only from a peer in that set, so it must name proxies you control and no wider: a host trusted here can set `X-Forwarded-For` to anything, and one that passes a client's header through unchanged turns the source limit off. The example configuration sets `X-Real-IP` and `X-Forwarded-For` so the header is already arriving.
 
 `-insecure-cookies` has no place in any of this, and it is the one part of the requirement the process can check for itself: given together with a listener bound to anything but loopback, the server refuses to start rather than logging a warning nobody reads. The rest has to be written down precisely because it cannot be checked — the server cannot see a TLS version it never negotiated, and it cannot tell a stripped header from an absent one.
 
@@ -291,7 +294,8 @@ server {
         # which makes every Origin/Host comparison a mismatch.
         proxy_set_header Host $http_host;
 
-        # Not read today. Rate limiting per source address needs them.
+        # Read by the rate limiter when zorkd is started with
+        # -trusted-proxies 127.0.0.1/32; ignored otherwise.
         proxy_set_header X-Real-IP       $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }

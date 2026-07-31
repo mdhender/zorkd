@@ -1,8 +1,10 @@
 package httpserver
 
 import (
+	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +49,11 @@ const (
 type attemptLimit struct {
 	source *limiter
 	email  *limiter
+
+	// clientIP attributes a request to a source. When nil the source is the
+	// direct peer; [New] sets it to a resolver that reads the forwarded chain
+	// for requests arriving through a configured trusted proxy.
+	clientIP func(*http.Request) string
 }
 
 // allow reports whether the attempt may proceed, and how long the caller should
@@ -56,26 +63,120 @@ type attemptLimit struct {
 // let anyone flooding one host push somebody else's address out of its own
 // allowance for free.
 func (a *attemptLimit) allow(r *http.Request, email string) (time.Duration, bool) {
-	if retry, ok := a.source.allow(sourceKey(r)); !ok {
+	source := sourceKey(r)
+	if a.clientIP != nil {
+		source = a.clientIP(r)
+	}
+	if retry, ok := a.source.allow(source); !ok {
 		return retry, false
 	}
 	return a.email.allow(emailKey(email))
 }
 
-// sourceKey is the address a request came from.
+// sourceKey is the direct peer a request came from: r.RemoteAddr's host and
+// nothing else.
 //
-// It is r.RemoteAddr's host and nothing else. X-Forwarded-For is deliberately
-// not read: any client can write that header, and believing it without a
-// configured list of proxies that are allowed to set it turns the limiter off
-// for whoever bothers to. Behind a reverse proxy this therefore sees the
-// proxy's address and every player shares one bucket; teaching it which hop to
-// trust is separate work.
+// It reads no forwarded header, because any client can write one. Attributing a
+// request to something other than its peer is [trustedProxies.clientIP]'s job,
+// and only for a request that actually arrived through a configured proxy.
 func sourceKey(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// trustedProxies is the set of proxy addresses whose forwarding headers may be
+// believed. It is empty unless -trusted-proxies is configured, and an empty set
+// reads no forwarded header at all — the safe default.
+type trustedProxies []netip.Prefix
+
+// ParseTrustedProxies parses a comma-separated list of CIDRs into the set of
+// proxies allowed to set X-Forwarded-For. A bare IP address is accepted as a
+// single host. An empty string is no proxies.
+//
+// It is validated at startup so a malformed list stops the server rather than
+// silently disabling the feature it was meant to enable.
+func ParseTrustedProxies(list string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, field := range strings.Split(list, ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(field); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(field)
+		if err != nil {
+			return nil, fmt.Errorf("trusted proxy %q: not a CIDR or IP address", field)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return prefixes, nil
+}
+
+// contains reports whether an address string falls in the trusted set.
+func (t trustedProxies) contains(ip string) bool {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, prefix := range t {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP is the address a request is attributed to for rate limiting.
+//
+// With no trusted proxies configured, or a request that did not arrive through
+// one, it is the direct peer and the forwarded chain is ignored: X-Forwarded-For
+// is attacker-controlled, so believing it from an untrusted peer would let a
+// client mint a fresh bucket per request and turn the source limit off.
+//
+// Only when the peer is a configured proxy is the chain read, and then from the
+// right — the end nearest us, appended by the closest proxy — taking the first
+// address that is not itself a trusted hop. Anything further left the client
+// could have forged, so the walk stops at the edge of the trust rather than
+// running on to the leftmost entry. An absent or entirely-trusted chain falls
+// back to the peer.
+func (t trustedProxies) clientIP(r *http.Request) string {
+	peer := sourceKey(r)
+	if len(t) == 0 || !t.contains(peer) {
+		return peer
+	}
+	hops := forwardedFor(r)
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if hop == "" || t.contains(hop) {
+			continue
+		}
+		// A trusted proxy set this, so it is the best attribution available.
+		// Normalize a parseable address so the same client keys the same way
+		// whether it arrives mapped into IPv6 or not; keep anything else as-is.
+		if addr, err := netip.ParseAddr(hop); err == nil {
+			return addr.Unmap().String()
+		}
+		return hop
+	}
+	return peer
+}
+
+// forwardedFor is the X-Forwarded-For chain left to right. net/http can present
+// the header as several values and each value may itself be comma-separated, so
+// both are flattened into one list.
+func forwardedFor(r *http.Request) []string {
+	var hops []string
+	for _, value := range r.Header.Values("X-Forwarded-For") {
+		hops = append(hops, strings.Split(value, ",")...)
+	}
+	return hops
 }
 
 // emailKey is the bucket a submitted address falls in.
