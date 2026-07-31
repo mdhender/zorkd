@@ -149,11 +149,14 @@ func run(args []string, stderr io.Writer) error {
 		return err
 	}
 
-	if removed, err := sessions.Sweep(ctx); err != nil {
-		logger.Warn("sweeping expired sessions failed", "error", err)
-	} else if removed > 0 {
-		logger.Info("swept expired sessions", "count", removed)
+	// Expired rows are collected once on the way up and periodically after. A
+	// server that stays up for months and sweeps only at startup keeps every
+	// session that was closed and never returned to.
+	sweeps := []sweep{
+		{name: "sessions", remove: sessions.Sweep},
 	}
+	runSweeps(ctx, logger, sweeps...)
+	go reap(ctx, logger, reapInterval, sweeps...)
 
 	server, err := httpserver.New(games, accounts, sessions, library, logger)
 	if err != nil {
