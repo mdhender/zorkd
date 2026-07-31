@@ -173,7 +173,28 @@ $ go run ./cmd/zorkd -addr :8080 -database /var/lib/zorkd/zorkd.db
 $ go run ./cmd/zorkd -insecure-cookies        # local development over plain HTTP
 ```
 
-`ZORK_ADDR`, `ZORK_DATABASE`, `ZORK_TURN_TIMEOUT` and `ZORK_INSTRUCTION_LIMIT` set the same things; a flag wins over the environment, and a setting that cannot be read stops the server rather than quietly becoming the default.
+The server needs nothing else. The story files, the templates and the assets are embedded, the database is created on first run, and the schema is brought up to date when it opens.
+
+### Server flags
+
+Every setting is read once, at startup. A flag wins over the environment, and a setting that cannot be read stops the server rather than quietly becoming the default — a misspelled `ZORK_TURN_TIMEOUT` is an error on the way up rather than five seconds nobody asked for.
+
+| Flag | Environment | Default | Format | Sets |
+| ---- | ----------- | ------- | ------ | ---- |
+| `-addr` | `ZORK_ADDR` | `localhost:8080` | `host:port`, as `net.Listen` takes it | the address to listen on |
+| `-database` | `ZORK_DATABASE` | `zorkd.db` | filesystem path | the SQLite database, created and migrated when it is opened |
+| `-turn-timeout` | `ZORK_TURN_TIMEOUT` | `5s` | a `time.ParseDuration` string | the wall-clock bound on one turn |
+| `-instruction-limit` | `ZORK_INSTRUCTION_LIMIT` | `5000000` | a plain unsigned integer | the instruction bound on one turn |
+| `-insecure-cookies` | — | `false` | a boolean flag | whether session cookies drop the `Secure` attribute |
+| `-v` | — | `false` | a boolean flag | whether logging is at debug level rather than info |
+
+**The listen default is loopback rather than `:8080`.** A server started with no arguments is reachable from this machine and from nowhere else. That is what a development run wants, and it is also what a deployment wants — see [Deployment](#deployment) for why the listener must not be public — but a first attempt to reach it from another host will find nothing there, and this is why.
+
+`-database` is resolved against the working directory when it is relative, so the absolute path is logged as the database opens. A server started in the wrong directory otherwise opens a different, empty database and says nothing about it until somebody wonders where their account went.
+
+`-insecure-cookies` drops the `Secure` attribute so a session survives plain HTTP. It exists for local development, and a deployment that serves over HTTPS must not use it — which is why the safe setting is the default and the unsafe one has to be asked for by name. Given together with a listener bound to anything but loopback it is refused, and the server does not start.
+
+### Issuing an invitation
 
 Registration is by invitation, and an invitation is issued from the command line rather than through an admin page the server does not have:
 
@@ -182,11 +203,26 @@ $ go run ./cmd/zorkd invite -database zorkd.db -base-url https://zork.example.co
 https://zork.example.com/register?invite=RiQ0…
 ```
 
-`ZORK_BASE_URL` sets `-base-url`. That printed line is the only place the token ever exists: the database holds only its SHA-256, so a lost invitation is reissued rather than looked up.
+| Flag | Environment | Default | Format | Sets |
+| ---- | ----------- | ------- | ------ | ---- |
+| `-database` | `ZORK_DATABASE` | `zorkd.db` | filesystem path | the database the invitation is written to |
+| `-base-url` | `ZORK_BASE_URL` | `http://localhost:8080` | an absolute URL with a host | where this server is reached, for the printed link |
 
-The server needs nothing else. The story files, the templates and the assets are embedded, the database is created on first run, and the schema is brought up to date when it opens.
+The subcommand takes exactly one argument, the address the invitation is for, and it opens the database itself rather than talking to a running server — so it can be run before the server is started. That printed line is the only place the token ever exists: the database holds only its SHA-256, so a lost invitation is reissued rather than looked up.
 
-`-insecure-cookies` drops the `Secure` attribute so a session survives plain HTTP. It exists for local development, and a deployment that serves over HTTPS must not use it — which is why the safe setting is the default and the unsafe one has to be asked for by name.
+### Fixed timeouts
+
+The HTTP timeouts are constants in `cmd/zorkd` with no flags behind them, and there is nothing to tune. A turn is already bounded by `-turn-timeout` and `-instruction-limit`, so these only have to outlast a turn: they bound a client holding a connection open rather than bounding the game.
+
+| Constant | Value | Bounds |
+| -------- | ----- | ------ |
+| `readHeaderTimeout` | 5s | how long a client may take to send its request headers |
+| `readTimeout` | 15s | reading the whole request, headers and body together |
+| `writeTimeout` | 30s | the response, measured from the end of the request headers |
+| `idleTimeout` | 2m | how long a kept-alive connection may sit between requests |
+| `shutdownTimeout` | 10s | how long requests in flight have to finish once a stop signal arrives |
+
+`SIGINT`, `SIGTERM` and `SIGHUP` all stop the server gracefully, with `shutdownTimeout` for the turns still running, and none of them reloads anything. See [Signals](#signals).
 
 ## Deployment
 
