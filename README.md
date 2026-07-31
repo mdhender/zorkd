@@ -178,6 +178,25 @@ The server needs nothing else. The story files, the templates and the assets are
 
 `-insecure-cookies` drops the `Secure` attribute so a session survives plain HTTP. It exists for local development, and a deployment that serves over HTTPS must not use it — which is why the safe setting is the default and the unsafe one has to be asked for by name.
 
+## Deployment
+
+`zorkd` speaks plain HTTP and has no TLS of its own. **It must run behind a trusted reverse proxy that terminates TLS 1.3 or better, and it must be reachable only through that proxy.** This is a requirement rather than a recommendation: the cross-site request forgery protection depends on it.
+
+`net/http.CrossOriginProtection` decides using the `Sec-Fetch-Site` header, or by comparing the hostname in `Origin` against `Host`. A request carrying neither is assumed to be same-origin or non-browser, and is allowed. Every input it trusts is therefore a header that travelled over the wire, and over plaintext an attacker on the path can simply remove both — at which point state-changing requests pass the check rather than failing it. TLS is what makes those headers worth reading, and 1.3 as the floor closes the downgrade route back to the same position.
+
+The same reasoning is why the listener must not be public. Anything that can open a socket to `zorkd` can send whatever `Sec-Fetch-Site` it likes, so an exposed port defeats the proxy however good the proxy's TLS is. `-addr` defaults to `localhost:8080` for exactly this reason.
+
+The proxy must:
+
+* **terminate TLS 1.3 or better,** redirect HTTP to HTTPS, and send HSTS;
+* **forward `Origin` and `Sec-Fetch-Site` unmodified.** A proxy that strips request headers it does not recognise turns the CSRF protection off, and nothing in the application will report it. Everything keeps working, which is what makes this the failure worth checking for first;
+* **preserve the external `Host`.** Rewriting it to `localhost:8080` makes every `Origin`/`Host` comparison a mismatch, and legitimate posts start being refused;
+* **reach `zorkd` over loopback or a private network,** and be the only thing that can.
+
+The application needs nothing in return. Session cookies are marked `Secure` by default, so it already assumes it is reached over HTTPS and does not have to be told per request — there is no `X-Forwarded-Proto` handling and none is wanted. `AddTrustedOrigin` is likewise unused, and stays that way while the terminal is served from a single origin.
+
+`-insecure-cookies` has no place in any of this.
+
 ## The Web Terminal
 
 The game page is text on a dark screen: a status bar, a scrolling transcript, and a command line with the cursor beside the prompt.
