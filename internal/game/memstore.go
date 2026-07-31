@@ -24,6 +24,10 @@ func NewMemoryStore() *MemoryStore {
 
 // Create assigns an identifier and stores the session at version 1.
 func (m *MemoryStore) Create(_ context.Context, session Session) (Session, error) {
+	if session.UserID == "" {
+		return Session{}, fmt.Errorf("create: no user")
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -35,13 +39,17 @@ func (m *MemoryStore) Create(_ context.Context, session Session) (Session, error
 	return session, nil
 }
 
-// Load returns a copy of the stored session.
-func (m *MemoryStore) Load(_ context.Context, id string) (Session, error) {
+// Load returns a copy of the user's session.
+//
+// Another user's session is reported as missing, exactly as the database
+// reports it: the answer must not tell one player that another player's game
+// exists.
+func (m *MemoryStore) Load(_ context.Context, userID, id string) (Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	session, ok := m.sessions[id]
-	if !ok {
+	if !ok || session.UserID != userID {
 		return Session{}, fmt.Errorf("%s: %w", id, ErrSessionNotFound)
 	}
 	return clone(session), nil
@@ -54,7 +62,7 @@ func (m *MemoryStore) Update(_ context.Context, session Session) (Session, error
 	defer m.mu.Unlock()
 
 	stored, ok := m.sessions[session.ID]
-	if !ok {
+	if !ok || stored.UserID != session.UserID {
 		return Session{}, fmt.Errorf("%s: %w", session.ID, ErrSessionNotFound)
 	}
 	if stored.Version != session.Version {

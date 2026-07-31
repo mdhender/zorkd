@@ -95,7 +95,9 @@ func TestOpenIsRepeatable(t *testing.T) {
 	path := testPath(t)
 
 	first := openAt(t, path)
-	created, err := first.Sessions().Create(context.Background(), storedSession())
+	owner := testUser(t, first, "player@example.com")
+
+	created, err := first.Sessions().Create(context.Background(), storedSession(owner))
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -117,7 +119,7 @@ func TestOpenIsRepeatable(t *testing.T) {
 		t.Errorf("reopening moved the schema from %d to %d", before, after)
 	}
 
-	loaded, err := second.Sessions().Load(context.Background(), created.ID)
+	loaded, err := second.Sessions().Load(context.Background(), owner, created.ID)
 	if err != nil {
 		t.Fatalf("Load() after reopening error = %v", err)
 	}

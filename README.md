@@ -206,6 +206,14 @@ The state is written whole and read back whole. No column is derived from it, th
 
 Every turn's write is conditional on the version it read, so a turn that lost a race is refused instead of overwriting the one that won.
 
+## Accounts
+
+Players sign in with an email address and a password. Passwords are hashed with Argon2id and stored in the PHC string form, so the cost parameters and the salt travel inside each hash and can be raised later without invalidating what is already there. An unknown address and a wrong password are the same answer, and both cost the same work — a faster "no" for addresses with no account is a way of asking the server who its users are.
+
+A logged-in browser carries a cookie holding 256 bits of randomness: `HttpOnly`, `Secure`, `SameSite=Lax`, and expiring. The database keeps only the SHA-256 of that value, so a copy of it cannot be used to log in as anybody, and logging out deletes the row rather than merely asking the browser to forget.
+
+Every game belongs to an account. The owner is part of the query rather than a check made afterwards — a game identifier is not a capability, and one taken from somebody else's browser reads as a game that does not exist, because saying "not yours" would confirm that it does.
+
 ## Session Model
 
 A session identifies:

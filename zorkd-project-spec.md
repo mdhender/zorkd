@@ -435,10 +435,20 @@ The final schema may differ, but begin with approximately:
 ```sql
 CREATE TABLE users (
     id          INTEGER PRIMARY KEY,
-    email       TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
+    email       TEXT NOT NULL UNIQUE,       -- normalized: trimmed and lowercased
+    password_hash TEXT NOT NULL,            -- PHC-encoded Argon2id
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE auth_sessions (
+    id          INTEGER PRIMARY KEY,
+    token_hash  BLOB NOT NULL UNIQUE,       -- SHA-256 of the cookie value
+    user_id     INTEGER NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE games (
@@ -448,10 +458,13 @@ CREATE TABLE games (
     state       BLOB,                       -- Result.State; NULL once halted
     turn        INTEGER NOT NULL DEFAULT 0,
     version     INTEGER NOT NULL DEFAULT 0, -- bumped every turn; see section 9
+    halted      INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
 
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    CHECK (halted = 1 OR (state IS NOT NULL AND length(state) > 0)),
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE saves (
@@ -508,6 +521,12 @@ Normalize email addresses consistently for lookup.
 
 Passwords must be stored using an appropriate password hashing algorithm. Never store plaintext passwords.
 
+**The decision.** Argon2id, from `golang.org/x/crypto/argon2`, at OWASP's current parameters: 19 MiB of memory, two passes, one lane, a 16-byte salt and a 32-byte key. Hashes are stored in the PHC string form, so the algorithm, its parameters and the salt travel inside the hash and raising the cost later does not invalidate what is already stored.
+
+Normalization is a trim and a lowercase, applied by `auth.NormalizeEmail` on both registration and login. Only a bare address is accepted; a display form such as `Player <player@example.com>` is refused rather than silently reduced.
+
+An unknown address and a wrong password are the same answer, `ErrInvalidCredentials`, and both cost a password verification. An early return would make a failed login measurably faster for addresses with no account, which is a way of asking the server who its users are.
+
 ### 8.2 Sessions
 
 Use secure HTTP-only cookies for browser authentication.
@@ -523,6 +542,10 @@ Requirements:
 
 Prefer conventional server-side session semantics over JWT unless a concrete deployment requirement emerges for stateless authentication.
 
+**The decision.** Server-side sessions, in `internal/session`. The cookie holds 256 bits from `crypto/rand`; the database holds only its SHA-256, so a copy of the database cannot be used to log in as anybody. `Secure` is the default and `WithInsecureCookies` has to be asked for by name, so a deployment fails safe. `SameSite=Lax` lets a player follow a link into the game while keeping the cookie off cross-site form posts. Logging out deletes the row as well as clearing the cookie: a copied cookie stops working.
+
+CSRF beyond `SameSite` belongs with the forms that need it — see milestone 9. `net/http.CrossOriginProtection` covers the HTMX design without a token in every form.
+
 ### 8.3 Authorization
 
 Every game and save operation must be scoped to the authenticated user.
@@ -530,6 +553,10 @@ Every game and save operation must be scoped to the authenticated user.
 Never trust a game or save identifier supplied by the browser without verifying ownership.
 
 The application must prevent one user from reading, modifying, restoring, or deleting another user's game state.
+
+**The decision.** The owner is a parameter of the store, not a check made afterwards: `Store.Load` takes the user, the SQL matches on `user_id`, and the conditional update matches on it too. There is no way to read a game without saying whose it is.
+
+Another user's session is reported as `ErrSessionNotFound` rather than as a refusal. Distinguishing "not yours" from "no such thing" confirms that a game exists, which is the one fact a stranger holding an identifier is trying to learn.
 
 ---
 
@@ -829,7 +856,7 @@ A starting structure:
 │   └── zorkplay/      # terminal driver for the turn cycle; no HTTP
 │       └── main.go
 ├── internal/
-│   ├── auth/
+│   ├── auth/          # accounts and passwords; no HTTP
 │   ├── database/
 │   ├── game/          # the turn cycle; the only importer of zmachine
 │   │   ├── library.go # LoadStory once per story, keyed by SHA-256
@@ -1126,6 +1153,8 @@ This milestone is required before server-side gameplay.
 - Login/logout.
 - Secure sessions.
 - Authorization boundaries.
+
+Login and logout are the operations, not the routes: `auth.Service` answers whether an email and password identify a user, and `session.Manager` turns that answer into a cookie. The handlers that call them arrive with the web terminal in milestone 9.
 
 ### Milestone 9 — Web terminal
 

@@ -74,6 +74,12 @@ func (db *DB) Close() error {
 // Sessions returns the store of games in progress.
 func (db *DB) Sessions() *Sessions { return &Sessions{db: db} }
 
+// Users returns the store of accounts.
+func (db *DB) Users() *Users { return &Users{db: db} }
+
+// AuthSessions returns the store of browser sessions.
+func (db *DB) AuthSessions() *AuthSessions { return &AuthSessions{db: db} }
+
 // conn takes a connection from the pool and returns it along with the function
 // that puts it back.
 func (db *DB) conn(ctx context.Context) (*sqlite.Conn, func(), error) {
@@ -155,6 +161,15 @@ func (db *DB) SchemaVersion(ctx context.Context) (int, error) {
 	return userVersion(conn)
 }
 
-// now formats a timestamp for a TEXT column. UTC and RFC 3339 sort the way they
-// read.
-func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+// timeFormat is RFC 3339 with a fixed nine-digit fraction.
+//
+// The width matters: [time.RFC3339Nano] trims trailing zeros, which sorts a
+// whole second before a fraction of one, and session expiry is compared as a
+// string in SQL.
+const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
+
+// stamp formats a timestamp for a TEXT column. UTC sorts the way it reads.
+func stamp(t time.Time) string { return t.UTC().Format(timeFormat) }
+
+// now is the current time, formatted for a TEXT column.
+func now() string { return stamp(time.Now()) }

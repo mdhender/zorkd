@@ -37,6 +37,10 @@ var (
 type Session struct {
 	ID string
 
+	// UserID owns the session. Every read and every write is scoped to it, so
+	// an identifier a browser supplies can only reach that browser's games.
+	UserID string
+
 	// StoryKey identifies the exact story image State was written from. A
 	// state only restores into a machine built from that file.
 	StoryKey StoryKey
@@ -63,18 +67,21 @@ type Session struct {
 // It stores State as opaque bytes: it must not compress it, parse it, or write
 // anything derived from it. Implementations may be used from several goroutines
 // at once.
+// Every lookup is scoped to the owning user. A session that belongs to somebody
+// else is reported as ErrSessionNotFound rather than as a refusal, because
+// distinguishing the two would let a stranger count the games on the server.
 type Store interface {
 	// Create stores a new session and returns it with ID and Version
-	// assigned by the store.
+	// assigned by the store. session.UserID must be set.
 	Create(ctx context.Context, session Session) (Session, error)
 
-	// Load returns the stored session, or ErrSessionNotFound.
-	Load(ctx context.Context, id string) (Session, error)
+	// Load returns the user's session, or ErrSessionNotFound.
+	Load(ctx context.Context, userID, id string) (Session, error)
 
-	// Update writes the session only if the stored version still matches
-	// session.Version, and returns it with the new version. It returns
-	// ErrVersionConflict if the stored version has moved, and
-	// ErrSessionNotFound if the session is gone.
+	// Update writes the session only if it still belongs to session.UserID and
+	// the stored version still matches session.Version, and returns it with
+	// the new version. It returns ErrVersionConflict if the stored version has
+	// moved, and ErrSessionNotFound if the session is gone.
 	Update(ctx context.Context, session Session) (Session, error)
 }
 
@@ -108,7 +115,11 @@ func NewService(library *Library, runner *Runner, store Store) (*Service, error)
 //
 // The returned Result holds the banner and opening room; the returned Session
 // is what later turns are played against.
-func (s *Service) NewGame(ctx context.Context, storyID string) (Session, zmachine.Result, error) {
+func (s *Service) NewGame(ctx context.Context, userID, storyID string) (Session, zmachine.Result, error) {
+	if userID == "" {
+		return Session{}, zmachine.Result{}, errors.New("game: new game: no user")
+	}
+
 	entry, ok := s.library.ByID(storyID)
 	if !ok {
 		return Session{}, zmachine.Result{}, fmt.Errorf("game: %s: %w", storyID, ErrStoryUnavailable)
@@ -120,6 +131,7 @@ func (s *Service) NewGame(ctx context.Context, storyID string) (Session, zmachin
 	}
 
 	session, err := s.store.Create(ctx, Session{
+		UserID:   userID,
 		StoryKey: entry.Key,
 		State:    result.State,
 		Halted:   result.Status == zmachine.Halted,
@@ -142,11 +154,15 @@ func (s *Service) NewGame(ctx context.Context, storyID string) (Session, zmachin
 // A failed turn writes nothing. The session returned with the error is the
 // zero value; the stored one is still the good one, and the command may be
 // tried again if [Classify] says the fault is retryable.
-func (s *Service) Play(ctx context.Context, sessionID, command string) (Session, zmachine.Result, error) {
+func (s *Service) Play(ctx context.Context, userID, sessionID, command string) (Session, zmachine.Result, error) {
+	if userID == "" {
+		return Session{}, zmachine.Result{}, errors.New("game: play: no user")
+	}
+
 	unlock := s.locks.lock(sessionID)
 	defer unlock()
 
-	session, err := s.store.Load(ctx, sessionID)
+	session, err := s.store.Load(ctx, userID, sessionID)
 	if err != nil {
 		return Session{}, zmachine.Result{}, fmt.Errorf("game: session %s: load: %w", sessionID, err)
 	}
@@ -183,8 +199,12 @@ func (s *Service) Play(ctx context.Context, sessionID, command string) (Session,
 
 // Session returns a stored session without playing anything, for a client that
 // is reconnecting rather than issuing a command.
-func (s *Service) Session(ctx context.Context, sessionID string) (Session, error) {
-	session, err := s.store.Load(ctx, sessionID)
+func (s *Service) Session(ctx context.Context, userID, sessionID string) (Session, error) {
+	if userID == "" {
+		return Session{}, errors.New("game: session: no user")
+	}
+
+	session, err := s.store.Load(ctx, userID, sessionID)
 	if err != nil {
 		return Session{}, fmt.Errorf("game: session %s: load: %w", sessionID, err)
 	}

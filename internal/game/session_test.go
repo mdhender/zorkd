@@ -13,12 +13,17 @@ import (
 	"github.com/mdhender/zorkd/games"
 )
 
+// player is the user every session in these tests belongs to. The Service takes
+// the owner from its caller and never invents one, so the tests have to supply
+// it too.
+const player = "1"
+
 func TestNewGameStoresTheOpening(t *testing.T) {
 	store := NewMemoryStore()
 	service := serviceOver(t, store)
 	entry := testEntry(t, "zork1")
 
-	session, result, err := service.NewGame(t.Context(), "zork1")
+	session, result, err := service.NewGame(t.Context(), player, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
@@ -51,18 +56,18 @@ func TestNewGameStoresTheOpening(t *testing.T) {
 func TestSessionSurvivesARestart(t *testing.T) {
 	store := NewMemoryStore()
 
-	session, _, err := serviceOver(t, store).NewGame(t.Context(), "zork1")
+	session, _, err := serviceOver(t, store).NewGame(t.Context(), player, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
 	for _, command := range []string{"open mailbox", "take leaflet", "north"} {
-		if _, _, err := serviceOver(t, store).Play(t.Context(), session.ID, command); err != nil {
+		if _, _, err := serviceOver(t, store).Play(t.Context(), player, session.ID, command); err != nil {
 			t.Fatalf("Play(%q) error = %v", command, err)
 		}
 	}
 
 	// A new process: new library, new runner, new service, same store.
-	resumed, result, err := serviceOver(t, store).Play(t.Context(), session.ID, "inventory")
+	resumed, result, err := serviceOver(t, store).Play(t.Context(), player, session.ID, "inventory")
 	if err != nil {
 		t.Fatalf("Play() after restart error = %v", err)
 	}
@@ -85,15 +90,15 @@ func TestFailedTurnLeavesTheStoredStateIntact(t *testing.T) {
 	store := NewMemoryStore()
 	service := serviceOver(t, store)
 
-	session, _, err := service.NewGame(t.Context(), "zork1")
+	session, _, err := service.NewGame(t.Context(), player, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
-	if _, _, err := service.Play(t.Context(), session.ID, "open mailbox"); err != nil {
+	if _, _, err := service.Play(t.Context(), player, session.ID, "open mailbox"); err != nil {
 		t.Fatalf("Play() error = %v", err)
 	}
 
-	before, err := store.Load(t.Context(), session.ID)
+	before, err := store.Load(t.Context(), player, session.ID)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -103,13 +108,13 @@ func TestFailedTurnLeavesTheStoredStateIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
-	if _, _, err := broken.Play(t.Context(), session.ID, "read leaflet"); err == nil {
+	if _, _, err := broken.Play(t.Context(), player, session.ID, "read leaflet"); err == nil {
 		t.Fatal("Play() = nil error, want the instruction limit")
 	} else if got := Classify(err); got != FaultExecutionLimit {
 		t.Fatalf("Classify() = %v, want %v", got, FaultExecutionLimit)
 	}
 
-	after, err := store.Load(t.Context(), session.ID)
+	after, err := store.Load(t.Context(), player, session.ID)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -123,7 +128,7 @@ func TestFailedTurnLeavesTheStoredStateIntact(t *testing.T) {
 	}
 
 	// And the session is still playable from exactly where it was.
-	_, result, err := service.Play(t.Context(), session.ID, "read leaflet")
+	_, result, err := service.Play(t.Context(), player, session.ID, "read leaflet")
 	if err != nil {
 		t.Fatalf("Play() after a failed turn error = %v", err)
 	}
@@ -138,14 +143,14 @@ func TestPlayRefusesAHaltedSession(t *testing.T) {
 	store := NewMemoryStore()
 	service := serviceOver(t, store)
 
-	session, _, err := service.NewGame(t.Context(), "zork1")
+	session, _, err := service.NewGame(t.Context(), player, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
-	if _, _, err := service.Play(t.Context(), session.ID, "quit"); err != nil {
+	if _, _, err := service.Play(t.Context(), player, session.ID, "quit"); err != nil {
 		t.Fatalf("Play(quit) error = %v", err)
 	}
-	halted, result, err := service.Play(t.Context(), session.ID, "yes")
+	halted, result, err := service.Play(t.Context(), player, session.ID, "yes")
 	if err != nil {
 		t.Fatalf("Play(yes) error = %v", err)
 	}
@@ -160,7 +165,7 @@ func TestPlayRefusesAHaltedSession(t *testing.T) {
 		t.Errorf("a halted session stored %d bytes of state", len(halted.State))
 	}
 
-	if _, _, err := service.Play(t.Context(), session.ID, "look"); !errors.Is(err, ErrGameOver) {
+	if _, _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrGameOver) {
 		t.Errorf("Play() on a halted session error = %v, want %v", err, ErrGameOver)
 	}
 }
@@ -168,14 +173,55 @@ func TestPlayRefusesAHaltedSession(t *testing.T) {
 func TestServiceRejectsBadRequests(t *testing.T) {
 	service := serviceOver(t, NewMemoryStore())
 
-	if _, _, err := service.NewGame(t.Context(), "zork4"); !errors.Is(err, ErrStoryUnavailable) {
+	if _, _, err := service.NewGame(t.Context(), player, "zork4"); !errors.Is(err, ErrStoryUnavailable) {
 		t.Errorf("NewGame(zork4) error = %v, want %v", err, ErrStoryUnavailable)
 	}
-	if _, _, err := service.Play(t.Context(), "1234", "look"); !errors.Is(err, ErrSessionNotFound) {
+	if _, _, err := service.Play(t.Context(), player, "1234", "look"); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Play() on an unknown session error = %v, want %v", err, ErrSessionNotFound)
 	}
-	if _, err := service.Session(t.Context(), "1234"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := service.Session(t.Context(), player, "1234"); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Session() on an unknown session error = %v, want %v", err, ErrSessionNotFound)
+	}
+
+	// Nothing is played on nobody's behalf. An empty user is a caller that
+	// forgot to authenticate, not an anonymous game.
+	if _, _, err := service.NewGame(t.Context(), "", "zork1"); err == nil {
+		t.Error("NewGame() with no user = nil error, want failure")
+	}
+	if _, _, err := service.Play(t.Context(), "", "1", "look"); err == nil {
+		t.Error("Play() with no user = nil error, want failure")
+	}
+	if _, err := service.Session(t.Context(), "", "1"); err == nil {
+		t.Error("Session() with no user = nil error, want failure")
+	}
+}
+
+// The authorization boundary: a session identifier is not a capability, and one
+// player holding another's cannot read it, play it, or learn that it exists.
+func TestOneUserCannotReachAnothersGame(t *testing.T) {
+	service := serviceOver(t, NewMemoryStore())
+
+	mine, _, err := service.NewGame(t.Context(), player, "zork1")
+	if err != nil {
+		t.Fatalf("NewGame() error = %v", err)
+	}
+
+	const stranger = "2"
+
+	if _, err := service.Session(t.Context(), stranger, mine.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Session() as another user error = %v, want %v", err, ErrSessionNotFound)
+	}
+	if _, _, err := service.Play(t.Context(), stranger, mine.ID, "north"); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Play() as another user error = %v, want %v", err, ErrSessionNotFound)
+	}
+
+	// And the refused turn did not move the game.
+	after, err := service.Session(t.Context(), player, mine.ID)
+	if err != nil {
+		t.Fatalf("Session() error = %v", err)
+	}
+	if after.Turn != 0 || after.Version != mine.Version {
+		t.Errorf("the refused turn moved the session: %+v", after)
 	}
 }
 
@@ -184,7 +230,7 @@ func TestServiceRejectsBadRequests(t *testing.T) {
 func TestPlayReportsAMissingStory(t *testing.T) {
 	store := NewMemoryStore()
 
-	session, _, err := serviceOver(t, store).NewGame(t.Context(), "zork2")
+	session, _, err := serviceOver(t, store).NewGame(t.Context(), player, "zork2")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
@@ -198,7 +244,7 @@ func TestPlayReportsAMissingStory(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	if _, _, err := service.Play(t.Context(), session.ID, "look"); !errors.Is(err, ErrStoryUnavailable) {
+	if _, _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrStoryUnavailable) {
 		t.Errorf("Play() error = %v, want %v", err, ErrStoryUnavailable)
 	}
 }
@@ -211,12 +257,12 @@ func TestPlayRefusesAStaleWrite(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	session, _, err := service.NewGame(t.Context(), "zork1")
+	session, _, err := service.NewGame(t.Context(), player, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
 
-	if _, _, err := service.Play(t.Context(), session.ID, "look"); !errors.Is(err, ErrVersionConflict) {
+	if _, _, err := service.Play(t.Context(), player, session.ID, "look"); !errors.Is(err, ErrVersionConflict) {
 		t.Errorf("Play() error = %v, want %v", err, ErrVersionConflict)
 	}
 }
@@ -237,7 +283,7 @@ func TestConcurrentTurnsAreSerialized(t *testing.T) {
 	store := NewMemoryStore()
 	service := serviceOver(t, store)
 
-	session, _, err := service.NewGame(t.Context(), "zork1")
+	session, _, err := service.NewGame(t.Context(), player, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
@@ -247,7 +293,7 @@ func TestConcurrentTurnsAreSerialized(t *testing.T) {
 
 	for range turns {
 		wg.Go(func() {
-			if _, _, err := service.Play(context.Background(), session.ID, "look"); err != nil {
+			if _, _, err := service.Play(context.Background(), player, session.ID, "look"); err != nil {
 				errs <- err
 			}
 		})
@@ -259,7 +305,7 @@ func TestConcurrentTurnsAreSerialized(t *testing.T) {
 		t.Errorf("Play() error = %v", err)
 	}
 
-	final, err := store.Load(t.Context(), session.ID)
+	final, err := store.Load(t.Context(), player, session.ID)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -276,20 +322,20 @@ func TestSessionsAreIndependent(t *testing.T) {
 	store := NewMemoryStore()
 	service := serviceOver(t, store)
 
-	first, _, err := service.NewGame(t.Context(), "zork1")
+	first, _, err := service.NewGame(t.Context(), player, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame(zork1) error = %v", err)
 	}
-	second, _, err := service.NewGame(t.Context(), "zork2")
+	second, _, err := service.NewGame(t.Context(), player, "zork2")
 	if err != nil {
 		t.Fatalf("NewGame(zork2) error = %v", err)
 	}
 
-	if _, _, err := service.Play(t.Context(), first.ID, "north"); err != nil {
+	if _, _, err := service.Play(t.Context(), player, first.ID, "north"); err != nil {
 		t.Fatalf("Play() error = %v", err)
 	}
 
-	_, result, err := service.Play(t.Context(), second.ID, "look")
+	_, result, err := service.Play(t.Context(), player, second.ID, "look")
 	if err != nil {
 		t.Fatalf("Play() error = %v", err)
 	}
@@ -297,7 +343,7 @@ func TestSessionsAreIndependent(t *testing.T) {
 		t.Errorf("the second session moved with the first: %q", result.StatusLine.Name)
 	}
 
-	untouched, err := service.Session(t.Context(), second.ID)
+	untouched, err := service.Session(t.Context(), player, second.ID)
 	if err != nil {
 		t.Fatalf("Session() error = %v", err)
 	}
@@ -332,7 +378,7 @@ func TestNewServiceRequiresItsParts(t *testing.T) {
 func TestMemoryStore(t *testing.T) {
 	store := NewMemoryStore()
 
-	created, err := store.Create(t.Context(), Session{State: []byte("state one")})
+	created, err := store.Create(t.Context(), Session{UserID: player, State: []byte("state one")})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -341,13 +387,13 @@ func TestMemoryStore(t *testing.T) {
 	}
 
 	t.Run("load is a copy", func(t *testing.T) {
-		loaded, err := store.Load(t.Context(), created.ID)
+		loaded, err := store.Load(t.Context(), player, created.ID)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
 		loaded.State[0] = 'X'
 
-		again, err := store.Load(t.Context(), created.ID)
+		again, err := store.Load(t.Context(), player, created.ID)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -360,7 +406,7 @@ func TestMemoryStore(t *testing.T) {
 		stale := created
 
 		updated, err := store.Update(t.Context(), Session{
-			ID: created.ID, Version: created.Version, State: []byte("state two"),
+			ID: created.ID, UserID: player, Version: created.Version, State: []byte("state two"),
 		})
 		if err != nil {
 			t.Fatalf("Update() error = %v", err)
@@ -373,7 +419,7 @@ func TestMemoryStore(t *testing.T) {
 			t.Errorf("Update() with a stale version error = %v, want %v", err, ErrVersionConflict)
 		}
 
-		loaded, err := store.Load(t.Context(), created.ID)
+		loaded, err := store.Load(t.Context(), player, created.ID)
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
@@ -383,10 +429,22 @@ func TestMemoryStore(t *testing.T) {
 	})
 
 	t.Run("missing sessions", func(t *testing.T) {
-		if _, err := store.Load(t.Context(), "nope"); !errors.Is(err, ErrSessionNotFound) {
+		if _, err := store.Load(t.Context(), player, "nope"); !errors.Is(err, ErrSessionNotFound) {
 			t.Errorf("Load() error = %v, want %v", err, ErrSessionNotFound)
 		}
-		if _, err := store.Update(t.Context(), Session{ID: "nope"}); !errors.Is(err, ErrSessionNotFound) {
+		if _, err := store.Update(t.Context(), Session{ID: "nope", UserID: player}); !errors.Is(err, ErrSessionNotFound) {
+			t.Errorf("Update() error = %v, want %v", err, ErrSessionNotFound)
+		}
+	})
+
+	t.Run("another user's session", func(t *testing.T) {
+		if _, err := store.Load(t.Context(), "2", created.ID); !errors.Is(err, ErrSessionNotFound) {
+			t.Errorf("Load() error = %v, want %v", err, ErrSessionNotFound)
+		}
+
+		theirs := created
+		theirs.UserID = "2"
+		if _, err := store.Update(t.Context(), theirs); !errors.Is(err, ErrSessionNotFound) {
 			t.Errorf("Update() error = %v, want %v", err, ErrSessionNotFound)
 		}
 	})

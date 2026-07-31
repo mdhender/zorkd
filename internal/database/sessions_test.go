@@ -10,18 +10,27 @@ import (
 	"github.com/mdhender/zorkd/internal/game"
 )
 
-func storedSession() game.Session {
+func storedSession(userID string) game.Session {
 	return game.Session{
+		UserID:   userID,
 		StoryKey: game.StoryKeyOf([]byte("a story")),
 		State:    []byte("saved state"),
 	}
 }
 
+// testSessions returns a store together with an account to own what goes in it.
+func testSessions(t *testing.T) (*Sessions, string) {
+	t.Helper()
+
+	db := testDB(t)
+	return db.Sessions(), testUser(t, db, "player@example.com")
+}
+
 func TestSessionsRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	sessions := testDB(t).Sessions()
+	sessions, owner := testSessions(t)
 
-	created, err := sessions.Create(ctx, storedSession())
+	created, err := sessions.Create(ctx, storedSession(owner))
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -32,7 +41,7 @@ func TestSessionsRoundTrip(t *testing.T) {
 		t.Errorf("Create() version = %d, want 1", created.Version)
 	}
 
-	loaded, err := sessions.Load(ctx, created.ID)
+	loaded, err := sessions.Load(ctx, owner, created.ID)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -57,7 +66,7 @@ func TestSessionsRoundTrip(t *testing.T) {
 		t.Errorf("Update() version = %d, want %d", updated.Version, loaded.Version+1)
 	}
 
-	again, err := sessions.Load(ctx, created.ID)
+	again, err := sessions.Load(ctx, owner, created.ID)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -70,9 +79,9 @@ func TestSessionsRoundTrip(t *testing.T) {
 // there first.
 func TestSessionsUpdateIsConditional(t *testing.T) {
 	ctx := context.Background()
-	sessions := testDB(t).Sessions()
+	sessions, owner := testSessions(t)
 
-	created, err := sessions.Create(ctx, storedSession())
+	created, err := sessions.Create(ctx, storedSession(owner))
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -92,7 +101,7 @@ func TestSessionsUpdateIsConditional(t *testing.T) {
 		t.Errorf("Update() with a stale version error = %v, want %v", err, game.ErrVersionConflict)
 	}
 
-	loaded, err := sessions.Load(ctx, created.ID)
+	loaded, err := sessions.Load(ctx, owner, created.ID)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -106,19 +115,54 @@ func TestSessionsUpdateIsConditional(t *testing.T) {
 
 func TestSessionsMissing(t *testing.T) {
 	ctx := context.Background()
-	sessions := testDB(t).Sessions()
+	sessions, owner := testSessions(t)
 
 	ids := []string{"1", "0", "-3", "", "abc", "1; DROP TABLE games", "../../etc/passwd"}
 
 	for _, id := range ids {
 		t.Run(id, func(t *testing.T) {
-			if _, err := sessions.Load(ctx, id); !errors.Is(err, game.ErrSessionNotFound) {
+			if _, err := sessions.Load(ctx, owner, id); !errors.Is(err, game.ErrSessionNotFound) {
 				t.Errorf("Load(%q) error = %v, want %v", id, err, game.ErrSessionNotFound)
 			}
-			if _, err := sessions.Update(ctx, game.Session{ID: id, State: []byte("x")}); !errors.Is(err, game.ErrSessionNotFound) {
+			if _, err := sessions.Update(ctx, game.Session{ID: id, UserID: owner, State: []byte("x")}); !errors.Is(err, game.ErrSessionNotFound) {
 				t.Errorf("Update(%q) error = %v, want %v", id, err, game.ErrSessionNotFound)
 			}
 		})
+	}
+}
+
+// The owner is part of the query, so a session identifier taken from somebody
+// else's browser reads as a session that does not exist.
+func TestSessionsAreScopedToTheirOwner(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	sessions := db.Sessions()
+
+	owner := testUser(t, db, "player@example.com")
+	stranger := testUser(t, db, "stranger@example.com")
+
+	created, err := sessions.Create(ctx, storedSession(owner))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if _, err := sessions.Load(ctx, stranger, created.ID); !errors.Is(err, game.ErrSessionNotFound) {
+		t.Errorf("Load() as another user error = %v, want %v", err, game.ErrSessionNotFound)
+	}
+
+	theirs := created
+	theirs.UserID = stranger
+	theirs.State = []byte("a state they had no business writing")
+	if _, err := sessions.Update(ctx, theirs); !errors.Is(err, game.ErrSessionNotFound) {
+		t.Errorf("Update() as another user error = %v, want %v", err, game.ErrSessionNotFound)
+	}
+
+	loaded, err := sessions.Load(ctx, owner, created.ID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if string(loaded.State) != "saved state" {
+		t.Errorf("the refused write reached the row: %q", loaded.State)
 	}
 }
 
@@ -127,9 +171,10 @@ func TestSessionsMissing(t *testing.T) {
 func TestSessionsHalted(t *testing.T) {
 	ctx := context.Background()
 	db := testDB(t)
+	owner := testUser(t, db, "player@example.com")
 	sessions := db.Sessions()
 
-	created, err := sessions.Create(ctx, storedSession())
+	created, err := sessions.Create(ctx, storedSession(owner))
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -143,7 +188,7 @@ func TestSessionsHalted(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	loaded, err := sessions.Load(ctx, created.ID)
+	loaded, err := sessions.Load(ctx, owner, created.ID)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -165,13 +210,13 @@ func TestSessionsHalted(t *testing.T) {
 // restore into a failure that reads as corruption. The schema refuses it.
 func TestSessionsRefuseALiveGameWithNoState(t *testing.T) {
 	ctx := context.Background()
-	sessions := testDB(t).Sessions()
+	sessions, owner := testSessions(t)
 
 	if _, err := sessions.Create(ctx, game.Session{StoryKey: game.StoryKeyOf([]byte("a story"))}); err == nil {
 		t.Fatal("Create() = nil error, want the check constraint to refuse it")
 	}
 
-	created, err := sessions.Create(ctx, storedSession())
+	created, err := sessions.Create(ctx, storedSession(owner))
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -182,7 +227,7 @@ func TestSessionsRefuseALiveGameWithNoState(t *testing.T) {
 		t.Fatal("Update() = nil error, want the check constraint to refuse it")
 	}
 
-	loaded, err := sessions.Load(ctx, created.ID)
+	loaded, err := sessions.Load(ctx, owner, created.ID)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -203,12 +248,14 @@ func TestGameSurvivesAServerRestart(t *testing.T) {
 	}
 
 	first := openAt(t, path)
+	owner := testUser(t, first, "player@example.com")
+
 	service, err := game.NewService(library, game.NewRunner(), first.Sessions())
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	session, opening, err := service.NewGame(ctx, "zork1")
+	session, opening, err := service.NewGame(ctx, owner, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
@@ -216,7 +263,7 @@ func TestGameSurvivesAServerRestart(t *testing.T) {
 		t.Fatalf("the game did not open: %q", opening.Output)
 	}
 	for _, command := range []string{"open mailbox", "take leaflet", "north"} {
-		if _, _, err := service.Play(ctx, session.ID, command); err != nil {
+		if _, _, err := service.Play(ctx, owner, session.ID, command); err != nil {
 			t.Fatalf("Play(%q) error = %v", command, err)
 		}
 	}
@@ -231,7 +278,7 @@ func TestGameSurvivesAServerRestart(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	after, result, err := resumed.Play(ctx, session.ID, "inventory")
+	after, result, err := resumed.Play(ctx, owner, session.ID, "inventory")
 	if err != nil {
 		t.Fatalf("Play() after the restart error = %v", err)
 	}
@@ -253,6 +300,7 @@ func TestConcurrentTurnsThroughSQLite(t *testing.T) {
 
 	ctx := context.Background()
 	db := testDB(t)
+	owner := testUser(t, db, "player@example.com")
 
 	library, err := game.Embedded()
 	if err != nil {
@@ -263,7 +311,7 @@ func TestConcurrentTurnsThroughSQLite(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	session, _, err := service.NewGame(ctx, "zork1")
+	session, _, err := service.NewGame(ctx, owner, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
@@ -273,7 +321,7 @@ func TestConcurrentTurnsThroughSQLite(t *testing.T) {
 
 	for range turns {
 		wg.Go(func() {
-			if _, _, err := service.Play(ctx, session.ID, "look"); err != nil {
+			if _, _, err := service.Play(ctx, owner, session.ID, "look"); err != nil {
 				errs <- err
 			}
 		})
@@ -285,7 +333,7 @@ func TestConcurrentTurnsThroughSQLite(t *testing.T) {
 		t.Errorf("Play() error = %v", err)
 	}
 
-	final, err := db.Sessions().Load(ctx, session.ID)
+	final, err := db.Sessions().Load(ctx, owner, session.ID)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}

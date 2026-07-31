@@ -26,6 +26,11 @@ var _ game.Store = (*Sessions)(nil)
 
 // Create stores a new session and returns it with its identifier and version.
 func (s *Sessions) Create(ctx context.Context, session game.Session) (game.Session, error) {
+	userID, err := userRowID(session.UserID)
+	if err != nil {
+		return game.Session{}, fmt.Errorf("database: create session: %w", err)
+	}
+
 	conn, release, err := s.db.conn(ctx)
 	if err != nil {
 		return game.Session{}, err
@@ -33,20 +38,21 @@ func (s *Sessions) Create(ctx context.Context, session game.Session) (game.Sessi
 	defer release()
 
 	stmt, err := conn.Prepare(
-		`INSERT INTO games (story_key, state, turn, version, halted, created_at, updated_at)
-		 VALUES (?, ?, ?, 1, ?, ?, ?);`)
+		`INSERT INTO games (user_id, story_key, state, turn, version, halted, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 1, ?, ?, ?);`)
 	if err != nil {
 		return game.Session{}, fmt.Errorf("database: create session: %w", err)
 	}
 	defer stmt.Reset()
 
-	stamp := now()
-	stmt.BindBytes(1, session.StoryKey[:])
-	bindState(stmt, 2, session.State)
-	stmt.BindInt64(3, int64(session.Turn))
-	stmt.BindBool(4, session.Halted)
-	stmt.BindText(5, stamp)
-	stmt.BindText(6, stamp)
+	at := now()
+	stmt.BindInt64(1, userID)
+	stmt.BindBytes(2, session.StoryKey[:])
+	bindState(stmt, 3, session.State)
+	stmt.BindInt64(4, int64(session.Turn))
+	stmt.BindBool(5, session.Halted)
+	stmt.BindText(6, at)
+	stmt.BindText(7, at)
 
 	if _, err := stmt.Step(); err != nil {
 		return game.Session{}, fmt.Errorf("database: create session: %w", err)
@@ -58,8 +64,17 @@ func (s *Sessions) Create(ctx context.Context, session game.Session) (game.Sessi
 	return session, nil
 }
 
-// Load returns the stored session.
-func (s *Sessions) Load(ctx context.Context, id string) (game.Session, error) {
+// Load returns the user's session.
+//
+// The owner is part of the query rather than a check made afterwards, so a
+// session that belongs to somebody else cannot be read at all — and it reads as
+// missing, because saying "not yours" would confirm that it exists.
+func (s *Sessions) Load(ctx context.Context, userID, id string) (game.Session, error) {
+	owner, err := userRowID(userID)
+	if err != nil {
+		return game.Session{}, fmt.Errorf("database: session %s: %w", id, game.ErrSessionNotFound)
+	}
+
 	rowID, err := rowID(id)
 	if err != nil {
 		return game.Session{}, err
@@ -71,7 +86,7 @@ func (s *Sessions) Load(ctx context.Context, id string) (game.Session, error) {
 	}
 	defer release()
 
-	return loadSession(conn, rowID)
+	return loadSession(conn, owner, rowID)
 }
 
 // Update writes the session only if the stored version is still the one that
@@ -81,6 +96,11 @@ func (s *Sessions) Load(ctx context.Context, id string) (game.Session, error) {
 // would otherwise both write, and the player of the losing one would watch a
 // command vanish. The loser is refused instead, with ErrVersionConflict.
 func (s *Sessions) Update(ctx context.Context, session game.Session) (game.Session, error) {
+	owner, err := userRowID(session.UserID)
+	if err != nil {
+		return game.Session{}, fmt.Errorf("database: session %s: %w", session.ID, game.ErrSessionNotFound)
+	}
+
 	rowID, err := rowID(session.ID)
 	if err != nil {
 		return game.Session{}, err
@@ -95,7 +115,7 @@ func (s *Sessions) Update(ctx context.Context, session game.Session) (game.Sessi
 	stmt, err := conn.Prepare(
 		`UPDATE games
 		    SET state = ?, turn = ?, halted = ?, version = version + 1, updated_at = ?
-		  WHERE id = ? AND version = ?;`)
+		  WHERE id = ? AND user_id = ? AND version = ?;`)
 	if err != nil {
 		return game.Session{}, fmt.Errorf("database: session %s: update: %w", session.ID, err)
 	}
@@ -106,16 +126,17 @@ func (s *Sessions) Update(ctx context.Context, session game.Session) (game.Sessi
 	stmt.BindBool(3, session.Halted)
 	stmt.BindText(4, now())
 	stmt.BindInt64(5, rowID)
-	stmt.BindInt64(6, session.Version)
+	stmt.BindInt64(6, owner)
+	stmt.BindInt64(7, session.Version)
 
 	if _, err := stmt.Step(); err != nil {
 		return game.Session{}, fmt.Errorf("database: session %s: update: %w", session.ID, err)
 	}
 
 	if conn.Changes() == 0 {
-		// Nothing matched: either the row is gone, or its version moved on
-		// while this turn was being played.
-		if _, err := loadSession(conn, rowID); err != nil {
+		// Nothing matched: the row is gone, it is not this user's, or its
+		// version moved on while the turn was being played.
+		if _, err := loadSession(conn, owner, rowID); err != nil {
 			return game.Session{}, err
 		}
 		return game.Session{}, fmt.Errorf("database: session %s: %w", session.ID, game.ErrVersionConflict)
@@ -138,7 +159,7 @@ func bindState(stmt *sqlite.Stmt, param int, state []byte) {
 	stmt.BindBytes(param, state)
 }
 
-func loadSession(conn *sqlite.Conn, rowID int64) (game.Session, error) {
+func loadSession(conn *sqlite.Conn, owner, rowID int64) (game.Session, error) {
 	var (
 		session game.Session
 		found   bool
@@ -146,13 +167,15 @@ func loadSession(conn *sqlite.Conn, rowID int64) (game.Session, error) {
 	)
 
 	err := sqlitex.Execute(conn,
-		`SELECT id, story_key, state, turn, version, halted FROM games WHERE id = ?;`,
+		`SELECT id, user_id, story_key, state, turn, version, halted
+		   FROM games WHERE id = ? AND user_id = ?;`,
 		&sqlitex.ExecOptions{
-			Args: []any{rowID},
+			Args: []any{rowID, owner},
 			ResultFunc: func(stmt *sqlite.Stmt) error {
 				found = true
 
 				session.ID = strconv.FormatInt(stmt.GetInt64("id"), 10)
+				session.UserID = strconv.FormatInt(stmt.GetInt64("user_id"), 10)
 				session.Turn = int(stmt.GetInt64("turn"))
 				session.Version = stmt.GetInt64("version")
 				session.Halted = stmt.GetBool("halted")

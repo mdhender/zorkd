@@ -58,7 +58,7 @@ func TestRebuiltMachineMatchesOneKeptAlive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("live Start() error = %v", err)
 	}
-	session, rebuilt, err := service.NewGame(t.Context(), entry.ID)
+	session, rebuilt, err := service.NewGame(t.Context(), player, entry.ID)
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
@@ -70,7 +70,7 @@ func TestRebuiltMachineMatchesOneKeptAlive(t *testing.T) {
 			t.Fatalf("live Run(%q) error = %v", command, err)
 		}
 
-		session, rebuilt, err = service.Play(t.Context(), session.ID, command)
+		session, rebuilt, err = service.Play(t.Context(), player, session.ID, command)
 		if err != nil {
 			t.Fatalf("Play(%q) error = %v", command, err)
 		}
@@ -99,7 +99,7 @@ func transcript(t *testing.T, seed uint64) string {
 
 	service := testService(t, WithRandomSeed(seed))
 
-	session, result, err := service.NewGame(t.Context(), "zork1")
+	session, result, err := service.NewGame(t.Context(), player, "zork1")
 	if err != nil {
 		t.Fatalf("NewGame() error = %v", err)
 	}
@@ -108,7 +108,7 @@ func transcript(t *testing.T, seed uint64) string {
 	out.WriteString(result.Output)
 
 	for _, command := range route {
-		session, result, err = service.Play(t.Context(), session.ID, command)
+		session, result, err = service.Play(t.Context(), player, session.ID, command)
 		if err != nil {
 			t.Fatalf("Play(%q) error = %v", command, err)
 		}
