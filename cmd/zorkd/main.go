@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -78,6 +79,12 @@ func run(args []string, stderr io.Writer) error {
 	if fs.NArg() != 0 {
 		fs.Usage()
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+
+	// Refused before the database is opened, so a configuration that cannot be
+	// correct does not leave a database file behind on its way out.
+	if err := checkCookiePolicy(*insecure, *addr); err != nil {
+		return err
 	}
 
 	level := slog.LevelInfo
@@ -183,6 +190,44 @@ func run(args []string, stderr io.Writer) error {
 	}
 
 	return nil
+}
+
+// checkCookiePolicy refuses -insecure-cookies on a listener that is reachable
+// from off the box.
+//
+// Neither half is wrong alone: the flag with the default loopback listener is
+// the development case it was built for, and a non-loopback listener without
+// the flag is the ordinary deployment behind a TLS-terminating proxy. Together
+// they describe a server that accepts connections from anywhere and hands out
+// session cookies without the Secure attribute, which is a development flag
+// that escaped into a deployment rather than anything anyone wanted. Refusing
+// to start cannot be missed the way a warning in a log can.
+func checkCookiePolicy(insecure bool, addr string) error {
+	if !insecure || isLoopbackAddr(addr) {
+		return nil
+	}
+	return fmt.Errorf("-insecure-cookies with -addr %q: the Secure attribute is dropped, so session cookies would travel in the clear to anyone who can reach this listener. Use it only with a loopback address, and never in a deployment", addr)
+}
+
+// isLoopbackAddr reports whether a listen address reaches only this machine.
+//
+// The literal "localhost" passes without a lookup: it is the default value of
+// -addr, and resolving a name at startup on a path that has no other reason to
+// touch DNS is not worth it. Everything else this cannot classify — a wildcard
+// host such as ":8080", a hostname, or an address SplitHostPort rejects — fails
+// closed, because being wrong in the permissive direction means a deployed
+// server sending cookies in the clear while being wrong in the strict direction
+// means an error naming the two settings to change.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // env reads a setting from the environment, falling back to a default.
