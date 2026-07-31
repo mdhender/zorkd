@@ -239,6 +239,10 @@ button.linklike:hover {
     margin-left: 1ch;
 }
 
+.games .discard {
+    margin-left: 1.5ch;
+}
+
 .credentials {
     display: grid;
     gap: 0.35rem;

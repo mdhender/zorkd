@@ -104,6 +104,14 @@ type Store interface {
 	// List returns the user's games, most recently played first.
 	List(ctx context.Context, userID string) ([]Summary, error)
 
+	// Delete removes the user's game and every save it holds, or returns
+	// ErrSessionNotFound.
+	//
+	// The saves go with it. A save is a snapshot of one game and means nothing
+	// without it, so leaving them behind would keep the largest rows in the
+	// database and make the deletion no deletion at all.
+	Delete(ctx context.Context, userID, id string) error
+
 	// CreateSave writes a snapshot of the user's game under snapshot.Name,
 	// replacing whatever the game already holds under that name and reporting
 	// whether it replaced one. Names are matched without regard to case.
@@ -433,6 +441,30 @@ func (s *Service) Games(ctx context.Context, userID string) ([]Summary, error) {
 		return nil, fmt.Errorf("game: user %s: list games: %w", userID, err)
 	}
 	return summaries, nil
+}
+
+// Delete throws a game away, once the player has confirmed.
+//
+// Every save the game holds goes with it, and unlike a save there is nothing
+// left to restore from: a caller that has not asked first is destroying
+// something the player cannot get back.
+//
+// The session is locked for the same reason a turn is. A delete that ran beside
+// a turn would leave the turn writing to a row that is no longer there, and the
+// player would read the failure as the command going wrong rather than as the
+// game having been thrown away.
+func (s *Service) Delete(ctx context.Context, userID, sessionID string) error {
+	if userID == "" {
+		return errors.New("game: delete: no user")
+	}
+
+	unlock := s.locks.lock(sessionID)
+	defer unlock()
+
+	if err := s.store.Delete(ctx, userID, sessionID); err != nil {
+		return fmt.Errorf("game: session %s: delete: %w", sessionID, err)
+	}
+	return nil
 }
 
 // Session returns a stored session without playing anything, for a client that

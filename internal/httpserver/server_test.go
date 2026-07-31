@@ -509,6 +509,129 @@ func TestRestartKeepsSavesThroughTheTerminal(t *testing.T) {
 	contains(t, inventory, "leaflet")
 }
 
+// The whole deletion, the way a player without JavaScript walks it: a link in
+// the lobby, a confirmation on the game's own page, and a post that returns to
+// the lobby with the game gone.
+func TestDeleteGameFromTheLobby(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	c.play(id, "open mailbox")
+	c.save(id, "with mailbox open")
+
+	lobby := c.get("/")
+	contains(t, lobby, `href="/games/`+id+`?prompt=delete"`)
+
+	confirm := c.get("/games/" + id + "?prompt=delete")
+	if confirm.Code != http.StatusOK {
+		t.Fatalf("GET the confirmation = %d, want %d", confirm.Code, http.StatusOK)
+	}
+	contains(t, confirm, "Delete this game for good?")
+	contains(t, confirm, "Every saved game it holds goes with it")
+	contains(t, confirm, `action="/games/`+id+`/delete"`)
+	// The game about to be thrown away is on the screen while the question is
+	// asked, and so is the way out of it.
+	contains(t, confirm, "West of House")
+	contains(t, confirm, "Cancel")
+
+	// Asking changed nothing.
+	if w := c.get("/games/" + id); w.Code != http.StatusOK {
+		t.Fatalf("GET the game after the question = %d, want %d", w.Code, http.StatusOK)
+	}
+	contains(t, c.get("/games/"+id+"/saves"), "with mailbox open")
+
+	w := c.post("/games/"+id+"/delete", nil)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("POST delete = %d, want %d: %s", w.Code, http.StatusSeeOther, w.Body.String())
+	}
+
+	to := w.Header().Get("Location")
+	if !strings.HasPrefix(to, "/?") {
+		t.Fatalf("Location = %q, want the lobby", to)
+	}
+
+	after := c.get(to)
+	contains(t, after, "That game is gone")
+	if strings.Contains(after.Body.String(), `href="/games/`+id+`"`) {
+		t.Errorf("the lobby still lists the deleted game:\n%s", after.Body.String())
+	}
+	contains(t, after, "No games yet.")
+
+	// And it is gone, not merely unlisted.
+	if w := c.get("/games/" + id); w.Code != http.StatusNotFound {
+		t.Errorf("GET the deleted game = %d, want %d", w.Code, http.StatusNotFound)
+	}
+	if w := c.post("/games/"+id+"/delete", nil); w.Code != http.StatusNotFound {
+		t.Errorf("POST delete twice = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+// A story that ended itself is the one a player is most likely to want rid of,
+// so the confirmation is offered ahead of the ended prompt rather than behind
+// it.
+func TestAnEndedGameCanBeDeleted(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	c.play(id, "quit")
+	c.play(id, "yes")
+
+	confirm := c.get("/games/" + id + "?prompt=delete")
+	contains(t, confirm, "Delete this game for good?")
+	contains(t, confirm, `action="/games/`+id+`/delete"`)
+
+	if w := c.post("/games/"+id+"/delete", nil); w.Code != http.StatusSeeOther {
+		t.Fatalf("POST delete = %d, want %d: %s", w.Code, http.StatusSeeOther, w.Body.String())
+	}
+	if w := c.get("/games/" + id); w.Code != http.StatusNotFound {
+		t.Errorf("GET the deleted game = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+// An htmx client is told to navigate: the page it posted from describes a game
+// that no longer exists, so there is no fragment to splice into it.
+func TestDeleteGameTellsHTMXToNavigate(t *testing.T) {
+	c := newTestClient(t)
+	c.register("player@example.com", "a good long password")
+	id := c.startGame("zork1")
+
+	w := c.postHTMX("/games/"+id+"/delete", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST delete = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if to := w.Header().Get("HX-Redirect"); !strings.HasPrefix(to, "/?") {
+		t.Errorf("HX-Redirect = %q, want the lobby", to)
+	}
+
+	if w := c.get("/games/" + id); w.Code != http.StatusNotFound {
+		t.Errorf("GET the deleted game = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+// Deleting is authorized against the game's owner like everything else, and a
+// game that is somebody else's reads as missing.
+func TestOneUserCannotDeleteAnothersGame(t *testing.T) {
+	owner := newTestClient(t)
+	owner.register("player@example.com", "a good long password")
+	id := owner.startGame("zork1")
+	owner.play(id, "open mailbox")
+
+	stranger := owner.otherBrowser()
+	stranger.register("stranger@example.com", "another good password")
+
+	if w := stranger.get("/games/" + id + "?prompt=delete"); w.Code != http.StatusNotFound {
+		t.Errorf("GET the confirmation as another user = %d, want %d", w.Code, http.StatusNotFound)
+	}
+	if w := stranger.post("/games/"+id+"/delete", nil); w.Code != http.StatusNotFound {
+		t.Errorf("POST delete as another user = %d, want %d", w.Code, http.StatusNotFound)
+	}
+
+	// And the owner's game survived it.
+	contains(t, owner.get("/games/"+id), "reveals a leaflet")
+}
+
 func TestLoginAndLogout(t *testing.T) {
 	c := newTestClient(t)
 	c.register("player@example.com", "a good long password")

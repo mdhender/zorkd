@@ -368,6 +368,106 @@ func TestRestartAHaltedSession(t *testing.T) {
 	}
 }
 
+// Deleting a game takes the game, its screen and every save it held. There is
+// nothing left afterwards, which is why the caller asks first.
+func TestDeleteGame(t *testing.T) {
+	store := NewMemoryStore()
+	service := serviceOver(t, store)
+
+	session, _, err := service.NewGame(t.Context(), player, "zork1")
+	if err != nil {
+		t.Fatalf("NewGame() error = %v", err)
+	}
+
+	play(t, service, session.ID, "open mailbox", "take leaflet")
+
+	if _, _, err := service.Save(t.Context(), player, session.ID, "with leaflet"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// A second game, to show that deleting one leaves the other alone.
+	other, _, err := service.NewGame(t.Context(), player, "zork2")
+	if err != nil {
+		t.Fatalf("NewGame(zork2) error = %v", err)
+	}
+	if _, _, err := service.Save(t.Context(), player, other.ID, "kept"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	if err := service.Delete(t.Context(), player, session.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	if _, err := service.Session(t.Context(), player, session.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Session() after Delete() error = %v, want %v", err, ErrSessionNotFound)
+	}
+	if _, err := service.Saves(t.Context(), player, session.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Saves() after Delete() error = %v, want %v", err, ErrSessionNotFound)
+	}
+	if err := service.Delete(t.Context(), player, session.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Delete() twice error = %v, want %v", err, ErrSessionNotFound)
+	}
+
+	// It is gone from the lobby's list as well.
+	games, err := service.Games(t.Context(), player)
+	if err != nil {
+		t.Fatalf("Games() error = %v", err)
+	}
+	if len(games) != 1 || games[0].ID != other.ID {
+		t.Errorf("Games() = %+v, want only %s", games, other.ID)
+	}
+
+	if store.Len() != 1 {
+		t.Errorf("the store holds %d sessions, want 1", store.Len())
+	}
+
+	// The deleted game's save is gone rather than merely unreachable: an
+	// orphaned snapshot is the largest thing this store would go on holding.
+	store.mu.Lock()
+	for id, snapshot := range store.saves {
+		if snapshot.GameID == session.ID {
+			t.Errorf("save %s still hangs off the deleted game", id)
+		}
+	}
+	held := len(store.saves)
+	store.mu.Unlock()
+
+	if held != 1 {
+		t.Errorf("the store holds %d saves, want 1", held)
+	}
+
+	// The other game kept its own save.
+	saves, err := service.Saves(t.Context(), player, other.ID)
+	if err != nil {
+		t.Fatalf("Saves() error = %v", err)
+	}
+	if len(saves) != 1 || saves[0].Name != "kept" {
+		t.Errorf("the other game holds %+v, want the save it was given", saves)
+	}
+}
+
+// A game that is somebody else's cannot be deleted, and reads as missing rather
+// than as a refusal.
+func TestOneUserCannotDeleteAnothersGame(t *testing.T) {
+	service := serviceOver(t, NewMemoryStore())
+
+	mine, _, err := service.NewGame(t.Context(), player, "zork1")
+	if err != nil {
+		t.Fatalf("NewGame() error = %v", err)
+	}
+
+	const stranger = "2"
+
+	if err := service.Delete(t.Context(), stranger, mine.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Delete() as another user error = %v, want %v", err, ErrSessionNotFound)
+	}
+
+	// And the game is still there.
+	if _, err := service.Session(t.Context(), player, mine.ID); err != nil {
+		t.Errorf("Session() after a refused delete error = %v", err)
+	}
+}
+
 func TestServiceRejectsBadRequests(t *testing.T) {
 	service := serviceOver(t, NewMemoryStore())
 
@@ -383,6 +483,9 @@ func TestServiceRejectsBadRequests(t *testing.T) {
 	if _, err := service.Restart(t.Context(), player, "1234"); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("Restart() on an unknown session error = %v, want %v", err, ErrSessionNotFound)
 	}
+	if err := service.Delete(t.Context(), player, "1234"); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("Delete() on an unknown session error = %v, want %v", err, ErrSessionNotFound)
+	}
 
 	// Nothing is played on nobody's behalf. An empty user is a caller that
 	// forgot to authenticate, not an anonymous game.
@@ -397,6 +500,9 @@ func TestServiceRejectsBadRequests(t *testing.T) {
 	}
 	if _, err := service.Restart(t.Context(), "", "1"); err == nil {
 		t.Error("Restart() with no user = nil error, want failure")
+	}
+	if err := service.Delete(t.Context(), "", "1"); err == nil {
+		t.Error("Delete() with no user = nil error, want failure")
 	}
 }
 

@@ -64,15 +64,17 @@ the list to choose from, and typing RESTART replaces it with the confirmation.
 The page load and the turn that swaps it use the same definition, so a refresh
 in the middle of any of those questions shows exactly what the turn showed.
 
-The restart confirmation is offered before the ended prompt, because a story that
-ended itself is exactly the one a player asks to begin again.
+The restart and delete confirmations are offered before the ended prompt: a
+story that ended itself is exactly the one a player asks to begin again, and it
+is also the one they are most likely to want rid of.
 */}}
 {{define "prompt-area"}}<div class="prompt-area" id="prompt-area">{{template "prompt-body" .}}</div>{{end}}
 
 {{define "prompt-area-oob"}}<div class="prompt-area" id="prompt-area" hx-swap-oob="true">{{template "prompt-body" .}}</div>{{end}}
 
 {{define "prompt-body"}}
-  {{- if eq .Mode "restart"}}{{template "restart-prompt" .}}
+  {{- if eq .Mode "delete"}}{{template "delete-prompt" .}}
+  {{- else if eq .Mode "restart"}}{{template "restart-prompt" .}}
   {{- else if .Halted}}{{template "ended-prompt" .}}
   {{- else if eq .Mode "save"}}{{template "save-prompt" .}}
   {{- else if eq .Mode "restore"}}{{template "restore-prompt" .}}
@@ -157,6 +159,22 @@ throw a game away should not have to guess whether they are going too.
 {{define "restart-prompt"}}<p class="hint">Restart this story from the beginning? This game is lost; your saved games are kept.</p>
 <form class="prompt" method="post" action="/games/{{.ID}}/restart">
   <button type="submit" autofocus>Restart</button>
+  <a class="cancel" href="/games/{{.ID}}">Cancel</a>
+</form>{{end}}
+
+{{/*
+Confirming a deletion. It is asked here, on the game's own page, so that what is
+about to be thrown away is on the screen while the question is asked — the same
+reason the restart confirmation lives here.
+
+The wording says what goes with it. A restart keeps the saves and this does not,
+and a player is owed that difference in words rather than being left to find it
+out afterwards. Cancelling is a link back to the game, and the answer goes to the
+lobby, because after this there is no game to go back to.
+*/}}
+{{define "delete-prompt"}}<p class="hint">Delete this game for good? Every saved game it holds goes with it, and there is nothing left to restore from.</p>
+<form class="prompt" method="post" action="/games/{{.ID}}/delete">
+  <button type="submit" autofocus>Delete</button>
   <a class="cancel" href="/games/{{.ID}}">Cancel</a>
 </form>{{end}}
 

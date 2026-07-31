@@ -220,6 +220,47 @@ func (s *Sessions) List(ctx context.Context, userID string) ([]game.Summary, err
 	return summaries, nil
 }
 
+// Delete removes the user's game and every save it holds.
+//
+// The owner is in the WHERE clause, as it is everywhere else here, so a game
+// that belongs to somebody else cannot be deleted — and it reads as missing,
+// because saying "not yours" would confirm that it exists.
+//
+// The saves are not deleted by a statement of their own: saves.game_id declares
+// ON DELETE CASCADE and every pooled connection is opened with foreign keys
+// enforced (see Open), so the one DELETE takes them with it. SQLite enforces
+// foreign keys only when asked to, which is why that pragma is not a detail:
+// without it the cascade is declared and does nothing, and the saves would
+// outlive the game as rows nothing can reach.
+func (s *Sessions) Delete(ctx context.Context, userID, id string) error {
+	owner, err := userRowID(userID)
+	if err != nil {
+		return fmt.Errorf("database: session %s: %w", id, game.ErrSessionNotFound)
+	}
+
+	rowID, err := rowID(id)
+	if err != nil {
+		return err
+	}
+
+	conn, release, err := s.db.conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	err = sqlitex.Execute(conn, `DELETE FROM games WHERE id = ? AND user_id = ?;`,
+		&sqlitex.ExecOptions{Args: []any{rowID, owner}})
+	if err != nil {
+		return fmt.Errorf("database: session %s: delete: %w", id, err)
+	}
+	if conn.Changes() == 0 {
+		return fmt.Errorf("database: session %s: %w", id, game.ErrSessionNotFound)
+	}
+
+	return nil
+}
+
 // bindState writes the state, or SQL NULL when there is none.
 //
 // The distinction matters: a zero-length blob would satisfy the schema's rule
