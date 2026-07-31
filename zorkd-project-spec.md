@@ -636,7 +636,7 @@ A turn produces three things worth rendering:
 | From the engine | Rendered as |
 | --- | --- |
 | `Result.Output` | The scrolling transcript. |
-| `Result.UpperWindow` | Whatever upper-window presentation the UI chooses. No cursor positions are attached. |
+| `Result.UpperWindow` | A block of its own above the transcript, never wrapped. No cursor positions are attached. |
 | `Result.StatusLine` | The status bar, drawn by this application. |
 
 Story output is data, never trusted HTML. Escape it on the way into a template. This is the same separation the terminal-operation model was reaching for, enforced at the rendering layer instead.
@@ -648,6 +648,10 @@ The engine performs no word wrapping and has no notion of screen width, because 
 Wrapping is therefore this application's work. Wrap for the roughly 80-column presentation described in section 10, and preserve the story's blank lines and leading spaces while doing it. Whitespace the story emitted deliberately — indentation, blank lines between paragraphs, the trailing `>` prompt with no newline after it — is meaningful.
 
 Prefer wrapping in CSS where the presentation allows it, so the stored transcript keeps the story's text as the story wrote it.
+
+**The decision:** `internal/terminal` provides both. `Wrap` folds text for a character terminal, preserving blank lines, indentation, runs of spaces and the prompt's missing trailing newline, and leaving a word longer than the width whole rather than breaking it. The HTML path inserts no newlines at all: the transcript goes into `<pre>` and is wrapped by CSS, so what is stored and what is sent stay exactly what the story wrote.
+
+The upper window is never wrapped on either path. It overlays fixed screen positions, so folding a long line would destroy the alignment that is its only purpose; it is presented whole, in a block above the transcript, and allowed to overhang.
 
 ### 11.2 Status line
 

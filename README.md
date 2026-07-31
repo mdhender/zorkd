@@ -176,7 +176,7 @@ $ go run ./cmd/zorkplay -seed 1988 zork2
 
 The game defaults to `zork1` and is chosen by library id, never by path — `games` is the only place a story file is named. The machine is rebuilt from the story and the previous turn's state on every command, exactly as the server will do it, so a bug that only appears when a machine is thrown away appears here too. The session's state lives in memory; durable persistence is the server's job.
 
-`-seed` makes a session reproducible, which is what makes a reported turn worth reporting. `-timeout` and `-limit` set the two bounds on a turn, and `-v` sends engine diagnostics to stderr.
+`-seed` makes a session reproducible, which is what makes a reported turn worth reporting. `-timeout` and `-limit` set the two bounds on a turn, `-width` sets the column count the story text is wrapped to, and `-v` sends engine diagnostics to stderr.
 
 ## Session State
 

@@ -32,14 +32,34 @@ func TestPlayASession(t *testing.T) {
 
 	for _, want := range []string{
 		"ZORK I: The Great Underground Empire",
-		"West of House   Score: 0   Moves: 0",
 		"reveals a leaflet",
 		"WELCOME TO ZORK",
-		"North of House   Score: 0   Moves: 3",
+		"North of House",
+		"Score: 0   Moves: 3",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("session output missing %q", want)
 		}
+	}
+}
+
+// The story's text is wrapped to the requested width on its way to the screen;
+// the engine performs no wrapping of its own.
+func TestPlayWrapsToTheRequestedWidth(t *testing.T) {
+	const width = 40
+
+	stdout, _, err := session(t, []string{"-width", "40"}, "look")
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	for line := range strings.SplitSeq(stdout, "\n") {
+		if len([]rune(line)) > width {
+			t.Errorf("line is %d columns wide, want at most %d: %q", len([]rune(line)), width, line)
+		}
+	}
+	if !strings.Contains(stdout, "You are standing in an open field") {
+		t.Error("the opening description did not survive wrapping")
 	}
 }
 

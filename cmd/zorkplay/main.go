@@ -26,6 +26,7 @@ import (
 	"github.com/maloquacious/zmachine"
 
 	"github.com/mdhender/zorkd/internal/game"
+	"github.com/mdhender/zorkd/internal/terminal"
 )
 
 const defaultGame = "zork1"
@@ -52,6 +53,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		seed    = fs.Uint64("seed", 0, "fixed random seed, for a reproducible session")
 		timeout = fs.Duration("timeout", game.DefaultTurnTimeout, "wall-clock bound on one turn")
 		limit   = fs.Uint64("limit", game.DefaultInstructionLimit, "instruction bound on one turn")
+		width   = fs.Int("width", terminal.DefaultWidth, "column count to wrap the story text to; 0 leaves it unwrapped")
 		verbose = fs.Bool("v", false, "log engine diagnostics to stderr")
 	)
 
@@ -100,7 +102,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 	})
 
-	return play(context.Background(), game.NewRunner(opts...), entry, stdin, stdout, stderr)
+	return play(context.Background(), game.NewRunner(opts...), entry, *width, stdin, stdout, stderr)
 }
 
 func listGames(w io.Writer, library *game.Library) error {
@@ -115,12 +117,12 @@ func listGames(w io.Writer, library *game.Library) error {
 
 // play runs a session to its end: the story halts, the reader reaches end of
 // input, or a turn fails in a way that is not worth continuing from.
-func play(ctx context.Context, runner *game.Runner, entry *game.Entry, stdin io.Reader, stdout, stderr io.Writer) error {
+func play(ctx context.Context, runner *game.Runner, entry *game.Entry, width int, stdin io.Reader, stdout, stderr io.Writer) error {
 	result, err := runner.Start(ctx, entry)
 	if err != nil {
 		return fmt.Errorf("start %s: %w", entry.ID, err)
 	}
-	render(stdout, result)
+	fmt.Fprint(stdout, terminal.NewTurn("", result).Text(width))
 
 	state := result.State
 	input := bufio.NewScanner(stdin)
@@ -156,37 +158,10 @@ func play(ctx context.Context, runner *game.Runner, entry *game.Entry, stdin io.
 		}
 
 		state = result.State
-		render(stdout, result)
+		fmt.Fprint(stdout, terminal.NewTurn(command, result).Text(width))
 	}
 
 	return nil
-}
-
-// render writes one turn to the terminal.
-//
-// Story text is written exactly as the engine reported it. Word wrapping and a
-// real screen model belong to the terminal package; corrupting the story's own
-// whitespace here to fake them would be worse than leaving it to the terminal.
-func render(w io.Writer, result zmachine.Result) {
-	if line := statusLine(result.StatusLine); line != "" {
-		fmt.Fprintf(w, "\n%s\n", line)
-	}
-	if result.UpperWindow != "" {
-		fmt.Fprintf(w, "%s\n", result.UpperWindow)
-	}
-	fmt.Fprint(w, result.Output)
-}
-
-// statusLine formats what the engine reported. It reports the status line and
-// never prints it, so every interpreter draws its own.
-func statusLine(s zmachine.StatusLine) string {
-	if !s.Available {
-		return ""
-	}
-	if s.TimeGame {
-		return fmt.Sprintf("%s   %d:%02d", s.Name, s.Hours, s.Minutes)
-	}
-	return fmt.Sprintf("%s   Score: %d   Moves: %d", s.Name, s.Score, s.Turns)
 }
 
 // reprompt redraws the story's prompt after this program has written something
