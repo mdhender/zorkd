@@ -182,8 +182,12 @@ func (t trustedProxies) has(addr netip.Addr) bool {
 // right — the end nearest us, appended by the closest proxy — taking the first
 // address that is not itself a trusted hop. Anything further left the client
 // could have forged, so the walk stops at the edge of the trust rather than
-// running on to the leftmost entry. An absent or entirely-trusted chain falls
-// back to the peer.
+// running on to the leftmost entry.
+//
+// An absent chain, an entirely-trusted one, and one carrying an entry that is
+// not an address all fall back to the peer. That is coarse — every client
+// behind the proxy shares a bucket — but it is the honest answer, and it is
+// the state this whole mechanism improves on rather than a new failure.
 func (t trustedProxies) clientIP(r *http.Request) string {
 	peer := sourceKey(r)
 	if len(t) == 0 {
@@ -202,8 +206,13 @@ func (t trustedProxies) clientIP(r *http.Request) string {
 		}
 		addr, err := netip.ParseAddr(hop)
 		if err != nil {
-			// A trusted proxy set this, so an unreadable value is kept as-is.
-			return hop
+			// A hop we cannot read is the end of what we know, so the request
+			// is attributed to the peer. Keeping the value as a key would make
+			// each of a proxy's "ip:port" entries its own bucket — the source
+			// limit off, silently — and walking on left would leave the edge of
+			// the trust for entries the client could have written. Pooling
+			// every client behind the proxy is coarse but never a guess.
+			return peer
 		}
 		if addr = addr.Unmap(); t.has(addr) {
 			continue

@@ -436,6 +436,15 @@ func TestClientIPPeelsThroughTrustedProxiesOnly(t *testing.T) {
 		{"a mapped trusted entry still matches the peer", "::ffff:127.0.0.1", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"a mapped trusted prefix still matches the peer", "::ffff:127.0.0.1/128", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"several header lines are one chain", "127.0.0.1/32", "127.0.0.1:5000", []string{"1.2.3.4", "203.0.113.7"}, "203.0.113.7"},
+
+		// A hop that is not an address ends the walk at the peer. The port form
+		// is the one that happens: Azure Front Door and some CDNs append
+		// "ip:port", where the port is the client's ephemeral source port and
+		// would otherwise make every request its own always-full bucket.
+		{"a hop carrying a port falls back to the peer", "127.0.0.1/32", "127.0.0.1:5000", []string{"203.0.113.7:41234"}, "127.0.0.1"},
+		{"a hop that is not an address falls back to the peer", "127.0.0.1/32", "127.0.0.1:5000", []string{"not-an-ip"}, "127.0.0.1"},
+		{"an unreadable hop does not resume the walk leftward", "127.0.0.1/32", "127.0.0.1:5000", []string{"9.9.9.9, 203.0.113.7:41234"}, "127.0.0.1"},
+		{"a blank entry is skipped rather than ending the walk", "127.0.0.1/32", "127.0.0.1:5000", []string{"203.0.113.7,"}, "203.0.113.7"},
 	}
 
 	for _, tt := range tests {
@@ -469,6 +478,26 @@ func TestAttemptLimitSeesPastATrustedProxy(t *testing.T) {
 	second := requestFrom("127.0.0.1:5000", "203.0.113.2")
 	if _, ok := limit.allow(second, "b@example.com"); !ok {
 		t.Error("a second client through the same proxy shared the first's bucket")
+	}
+}
+
+// A proxy that appends "ip:port" must not turn the source limit off. The port
+// is the client's ephemeral source port, so keying on the hop verbatim would
+// hand every request a fresh bucket that is always at full burst.
+func TestAttemptLimitIsNotDefeatedByAPortInTheChain(t *testing.T) {
+	limit := &attemptLimit{
+		source:   newLimiter(1, time.Minute, 64),
+		email:    newLimiter(5, time.Minute, 64),
+		clientIP: mustProxies(t, "127.0.0.1").clientIP,
+	}
+
+	if _, ok := limit.allow(requestFrom("127.0.0.1:5000", "203.0.113.1:41234"), "a@example.com"); !ok {
+		t.Fatal("the first attempt was refused inside its burst")
+	}
+	// A different port is the same client on a new connection, and even a
+	// different client pools here: unreadable hops fall back to the peer.
+	if _, ok := limit.allow(requestFrom("127.0.0.1:5000", "203.0.113.1:41235"), "a@example.com"); ok {
+		t.Error("a new source port minted a fresh bucket, so the source limit is off")
 	}
 }
 
