@@ -90,43 +90,81 @@ func sourceKey(r *http.Request) string {
 // trustedProxies is the set of proxy addresses whose forwarding headers may be
 // believed. It is empty unless -trusted-proxies is configured, and an empty set
 // reads no forwarded header at all — the safe default.
-type trustedProxies []netip.Prefix
+//
+// Every member is a single loopback host, so this is a list of addresses rather
+// than of prefixes: once a range cannot be configured, a type able to express
+// one would only describe a state the parser refuses. See [ParseTrustedProxies].
+type trustedProxies []netip.Addr
 
-// ParseTrustedProxies parses a comma-separated list of CIDRs into the set of
-// proxies allowed to set X-Forwarded-For. A bare IP address is accepted as a
-// single host. An empty string is no proxies.
+// ParseTrustedProxies parses a comma-separated list of proxy addresses into the
+// set allowed to set X-Forwarded-For. An empty string is no proxies.
+//
+// Every entry must be a single loopback host: 127.0.0.1 or ::1, written bare or
+// as an explicit /32 or /128. A range is refused even when it is itself
+// loopback, and so is any address off this machine.
+//
+// The narrowness is the point rather than a simplification. zorkd runs beside
+// its proxy on one host, so a trusted peer is always local; and a set wide
+// enough to contain a client hands that client its own rate-limit bucket,
+// because [trustedProxies.clientIP] steps past every trusted hop and lands in
+// whatever the client wrote to the left of it. Refusing the wide value is what
+// makes that unwritable rather than merely discouraged.
+//
+// Narrowing to loopback is not a licence to infer it: in development the server
+// listens on 127.0.0.1 and the browser is on 127.0.0.1 too, so the peer address
+// alone cannot tell a colocated proxy from a local client. Trust stays opt-in
+// and the default stays empty.
 //
 // It is validated at startup so a malformed list stops the server rather than
 // silently disabling the feature it was meant to enable.
-func ParseTrustedProxies(list string) ([]netip.Prefix, error) {
-	var prefixes []netip.Prefix
+func ParseTrustedProxies(list string) ([]netip.Addr, error) {
+	var addrs []netip.Addr
 	for _, field := range strings.Split(list, ",") {
 		field = strings.TrimSpace(field)
 		if field == "" {
 			continue
 		}
-		if prefix, err := netip.ParsePrefix(field); err == nil {
-			prefixes = append(prefixes, prefix.Masked())
-			continue
-		}
-		addr, err := netip.ParseAddr(field)
+		addr, err := parseTrustedProxy(field)
 		if err != nil {
-			return nil, fmt.Errorf("trusted proxy %q: not a CIDR or IP address", field)
+			return nil, err
 		}
-		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+		addrs = append(addrs, addr)
 	}
-	return prefixes, nil
+	return addrs, nil
 }
 
-// contains reports whether an address string falls in the trusted set.
-func (t trustedProxies) contains(ip string) bool {
-	addr, err := netip.ParseAddr(ip)
+// parseTrustedProxy reads one entry of the trusted-proxy list.
+//
+// Each refusal names what to write instead, because whoever wrote the rejected
+// value had a deployment in mind and the answer is nearly always the proxy's own
+// address on loopback.
+func parseTrustedProxy(field string) (netip.Addr, error) {
+	addr, err := netip.ParseAddr(field)
 	if err != nil {
-		return false
+		prefix, prefixErr := netip.ParsePrefix(field)
+		switch {
+		case prefixErr != nil:
+			return netip.Addr{}, fmt.Errorf("trusted proxy %q: not an IP address; the proxy runs beside the server, so this is 127.0.0.1 or ::1", field)
+		case !prefix.IsSingleIP():
+			return netip.Addr{}, fmt.Errorf("trusted proxy %q: a range is refused because any client inside it could choose its own rate-limit bucket; name the proxy's own address, 127.0.0.1 or ::1", field)
+		}
+		addr = prefix.Addr()
 	}
+
+	// Stored unmapped so ::ffff:127.0.0.1 and 127.0.0.1 are one member rather
+	// than two that never agree, and so a peer matches however it arrives.
 	addr = addr.Unmap()
-	for _, prefix := range t {
-		if prefix.Contains(addr) {
+	if !addr.IsLoopback() {
+		return netip.Addr{}, fmt.Errorf("trusted proxy %q: only a loopback address is accepted because zorkd expects its proxy on the same host, so this is 127.0.0.1 or ::1; a proxy elsewhere is not a supported deployment", field)
+	}
+	return addr, nil
+}
+
+// has reports whether addr is one of the trusted proxies. addr must already be
+// unmapped, as every stored member is.
+func (t trustedProxies) has(addr netip.Addr) bool {
+	for _, proxy := range t {
+		if proxy == addr {
 			return true
 		}
 	}
@@ -144,26 +182,45 @@ func (t trustedProxies) contains(ip string) bool {
 // right — the end nearest us, appended by the closest proxy — taking the first
 // address that is not itself a trusted hop. Anything further left the client
 // could have forged, so the walk stops at the edge of the trust rather than
-// running on to the leftmost entry. An absent or entirely-trusted chain falls
-// back to the peer.
+// running on to the leftmost entry.
+//
+// An absent chain, an entirely-trusted one, and one carrying an entry that is
+// not an address all fall back to the peer. That is coarse — every client
+// behind the proxy shares a bucket — but it is the honest answer, and it is
+// the state this whole mechanism improves on rather than a new failure.
 func (t trustedProxies) clientIP(r *http.Request) string {
 	peer := sourceKey(r)
-	if len(t) == 0 || !t.contains(peer) {
+	if len(t) == 0 {
 		return peer
 	}
+	peerAddr, err := netip.ParseAddr(peer)
+	if err != nil || !t.has(peerAddr.Unmap()) {
+		return peer
+	}
+
 	hops := forwardedFor(r)
 	for i := len(hops) - 1; i >= 0; i-- {
 		hop := strings.TrimSpace(hops[i])
-		if hop == "" || t.contains(hop) {
+		if hop == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(hop)
+		if err != nil {
+			// A hop we cannot read is the end of what we know, so the request
+			// is attributed to the peer. Keeping the value as a key would make
+			// each of a proxy's "ip:port" entries its own bucket — the source
+			// limit off, silently — and walking on left would leave the edge of
+			// the trust for entries the client could have written. Pooling
+			// every client behind the proxy is coarse but never a guess.
+			return peer
+		}
+		if addr = addr.Unmap(); t.has(addr) {
 			continue
 		}
 		// A trusted proxy set this, so it is the best attribution available.
-		// Normalize a parseable address so the same client keys the same way
-		// whether it arrives mapped into IPv6 or not; keep anything else as-is.
-		if addr, err := netip.ParseAddr(hop); err == nil {
-			return addr.Unmap().String()
-		}
-		return hop
+		// Normalized so the same client keys the same way whether it arrives
+		// mapped into IPv6 or not.
+		return addr.String()
 	}
 	return peer
 }

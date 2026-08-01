@@ -88,7 +88,7 @@ func serve(args []string, stderr io.Writer) error {
 		timeout  = fs.Duration("turn-timeout", defaultTimeout, "wall-clock bound on one turn")
 		limit    = fs.Uint64("instruction-limit", defaultLimit, "instruction bound on one turn")
 		insecure = fs.Bool("insecure-cookies", false, "drop the Secure attribute so cookies survive plain HTTP (development only)")
-		proxies  = fs.String("trusted-proxies", env("ZORK_TRUSTED_PROXIES", ""), "comma-separated CIDRs whose X-Forwarded-For the rate limiter may believe")
+		proxies  = fs.String("trusted-proxies", env("ZORK_TRUSTED_PROXIES", ""), "comma-separated loopback addresses whose X-Forwarded-For the rate limiter may believe")
 		verbose  = fs.Bool("v", false, "log at debug level")
 	)
 
@@ -124,7 +124,7 @@ func serve(args []string, stderr io.Writer) error {
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 	if len(trusted) > 0 {
-		logger.Info("trusting forwarded headers from proxies", "prefixes", len(trusted))
+		logger.Info("trusting forwarded headers from proxies", "proxies", len(trusted))
 	}
 
 	// SIGHUP stops the server, exactly as SIGINT and SIGTERM do. It is not a

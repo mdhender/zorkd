@@ -3,6 +3,7 @@ package httpserver
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -325,13 +326,26 @@ func requestFrom(peer string, forwarded ...string) *http.Request {
 }
 
 func TestParseTrustedProxies(t *testing.T) {
-	t.Run("CIDRs, bare IPs, and blanks", func(t *testing.T) {
-		got, err := ParseTrustedProxies(" 127.0.0.1 , 10.0.0.0/8 ,, ::1 ")
+	// The whole accepted vocabulary: a loopback host, bare or as an explicit
+	// single-address prefix.
+	t.Run("loopback hosts and blanks", func(t *testing.T) {
+		for _, entry := range []string{"127.0.0.1", "127.0.0.1/32", "::1", "::1/128"} {
+			got, err := ParseTrustedProxies(entry)
+			if err != nil {
+				t.Errorf("ParseTrustedProxies(%q) error = %v", entry, err)
+				continue
+			}
+			if len(got) != 1 {
+				t.Errorf("ParseTrustedProxies(%q) = %v, want one address", entry, got)
+			}
+		}
+
+		got, err := ParseTrustedProxies(" 127.0.0.1 ,, ::1 ")
 		if err != nil {
 			t.Fatalf("error = %v", err)
 		}
-		if len(got) != 3 {
-			t.Fatalf("parsed %d prefixes, want 3: %v", len(got), got)
+		if len(got) != 2 {
+			t.Fatalf("parsed %d addresses, want 2: %v", len(got), got)
 		}
 	})
 
@@ -342,9 +356,60 @@ func TestParseTrustedProxies(t *testing.T) {
 		}
 	})
 
+	// A range is refused whatever it covers. Written as "one host" rather than
+	// "anything loopback", so 127.0.0.0/8 goes with 10.0.0.0/8 — it is harmless
+	// but needless, and one rule is easier to hold than two.
+	t.Run("a range is refused, loopback or not", func(t *testing.T) {
+		for _, entry := range []string{"10.0.0.0/8", "192.0.2.0/24", "127.0.0.0/8", "::1/127"} {
+			if _, err := ParseTrustedProxies(entry); err == nil {
+				t.Errorf("ParseTrustedProxies(%q) = nil error, want a refusal", entry)
+			}
+		}
+	})
+
+	// The reported bug: a set containing a client lets that client pick its own
+	// bucket. Off-host addresses are the only way to write one, so they go.
+	t.Run("an address off this machine is refused", func(t *testing.T) {
+		for _, entry := range []string{"192.168.1.5", "10.0.0.1", "203.0.113.7", "fe80::1"} {
+			if _, err := ParseTrustedProxies(entry); err == nil {
+				t.Errorf("ParseTrustedProxies(%q) = nil error, want a refusal", entry)
+			}
+		}
+	})
+
 	t.Run("a malformed entry is refused", func(t *testing.T) {
 		if _, err := ParseTrustedProxies("127.0.0.1, not-an-ip"); err == nil {
 			t.Fatal("ParseTrustedProxies() accepted a malformed entry, want an error")
+		}
+	})
+
+	// Every refusal has to say what to write instead: whoever wrote the
+	// rejected value had a deployment in mind.
+	t.Run("a refusal names the entry and the remedy", func(t *testing.T) {
+		for _, entry := range []string{"10.0.0.0/8", "192.168.1.5", "not-an-ip"} {
+			_, err := ParseTrustedProxies(entry)
+			if err == nil {
+				t.Fatalf("ParseTrustedProxies(%q) = nil error", entry)
+			}
+			if !strings.Contains(err.Error(), entry) || !strings.Contains(err.Error(), "127.0.0.1") {
+				t.Errorf("ParseTrustedProxies(%q) error = %v, want it to name the entry and the remedy", entry, err)
+			}
+		}
+	})
+
+	// An entry that parses but can never match is the failure startup
+	// validation exists to prevent, so it has to be normalized rather than
+	// merely accepted. See #43; narrowing to loopback does not cover it,
+	// because IsLoopback is already true of the mapped form.
+	t.Run("a mapped entry is stored unmapped", func(t *testing.T) {
+		for _, entry := range []string{"::ffff:127.0.0.1", "::ffff:127.0.0.1/128"} {
+			got, err := ParseTrustedProxies(entry)
+			if err != nil {
+				t.Fatalf("ParseTrustedProxies(%q) error = %v", entry, err)
+			}
+			if len(got) != 1 || got[0] != netip.MustParseAddr("127.0.0.1") {
+				t.Errorf("ParseTrustedProxies(%q) = %v, want [127.0.0.1]", entry, got)
+			}
 		}
 	})
 }
@@ -363,12 +428,23 @@ func TestClientIPPeelsThroughTrustedProxiesOnly(t *testing.T) {
 		{"an untrusted peer ignores the header", "127.0.0.1/32", "203.0.113.9:5000", []string{"203.0.113.7"}, "203.0.113.9"},
 		{"a trusted peer, one hop", "127.0.0.1/32", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"a forged left prefix is never reached", "127.0.0.1/32", "127.0.0.1:5000", []string{"1.2.3.4, 203.0.113.7"}, "203.0.113.7"},
-		{"the walk peels every trusted hop", "10.0.0.0/8", "10.0.0.2:5000", []string{"203.0.113.7, 10.0.0.9"}, "203.0.113.7"},
+		{"the walk peels every trusted hop", "127.0.0.1,::1", "127.0.0.1:5000", []string{"203.0.113.7, ::1"}, "203.0.113.7"},
 		{"an absent chain falls back to the peer", "127.0.0.1/32", "127.0.0.1:5000", nil, "127.0.0.1"},
-		{"an all-trusted chain falls back to the peer", "10.0.0.0/8", "10.0.0.2:5000", []string{"10.0.0.9"}, "10.0.0.2"},
-		{"CIDR membership admits the peer", "192.0.2.0/24", "192.0.2.50:5000", []string{"203.0.113.7"}, "203.0.113.7"},
+		{"an all-trusted chain falls back to the peer", "127.0.0.1,::1", "127.0.0.1:5000", []string{"::1"}, "127.0.0.1"},
+		{"an IPv6 loopback peer is trusted", "::1", "[::1]:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"a mapped IPv6 client is normalized", "127.0.0.1/32", "127.0.0.1:5000", []string{"::ffff:203.0.113.7"}, "203.0.113.7"},
+		{"a mapped trusted entry still matches the peer", "::ffff:127.0.0.1", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
+		{"a mapped trusted prefix still matches the peer", "::ffff:127.0.0.1/128", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"several header lines are one chain", "127.0.0.1/32", "127.0.0.1:5000", []string{"1.2.3.4", "203.0.113.7"}, "203.0.113.7"},
+
+		// A hop that is not an address ends the walk at the peer. The port form
+		// is the one that happens: Azure Front Door and some CDNs append
+		// "ip:port", where the port is the client's ephemeral source port and
+		// would otherwise make every request its own always-full bucket.
+		{"a hop carrying a port falls back to the peer", "127.0.0.1/32", "127.0.0.1:5000", []string{"203.0.113.7:41234"}, "127.0.0.1"},
+		{"a hop that is not an address falls back to the peer", "127.0.0.1/32", "127.0.0.1:5000", []string{"not-an-ip"}, "127.0.0.1"},
+		{"an unreadable hop does not resume the walk leftward", "127.0.0.1/32", "127.0.0.1:5000", []string{"9.9.9.9, 203.0.113.7:41234"}, "127.0.0.1"},
+		{"a blank entry is skipped rather than ending the walk", "127.0.0.1/32", "127.0.0.1:5000", []string{"203.0.113.7,"}, "203.0.113.7"},
 	}
 
 	for _, tt := range tests {
@@ -402,6 +478,26 @@ func TestAttemptLimitSeesPastATrustedProxy(t *testing.T) {
 	second := requestFrom("127.0.0.1:5000", "203.0.113.2")
 	if _, ok := limit.allow(second, "b@example.com"); !ok {
 		t.Error("a second client through the same proxy shared the first's bucket")
+	}
+}
+
+// A proxy that appends "ip:port" must not turn the source limit off. The port
+// is the client's ephemeral source port, so keying on the hop verbatim would
+// hand every request a fresh bucket that is always at full burst.
+func TestAttemptLimitIsNotDefeatedByAPortInTheChain(t *testing.T) {
+	limit := &attemptLimit{
+		source:   newLimiter(1, time.Minute, 64),
+		email:    newLimiter(5, time.Minute, 64),
+		clientIP: mustProxies(t, "127.0.0.1").clientIP,
+	}
+
+	if _, ok := limit.allow(requestFrom("127.0.0.1:5000", "203.0.113.1:41234"), "a@example.com"); !ok {
+		t.Fatal("the first attempt was refused inside its burst")
+	}
+	// A different port is the same client on a new connection, and even a
+	// different client pools here: unreadable hops fall back to the peer.
+	if _, ok := limit.allow(requestFrom("127.0.0.1:5000", "203.0.113.1:41235"), "a@example.com"); ok {
+		t.Error("a new source port minted a fresh bucket, so the source limit is off")
 	}
 }
 
