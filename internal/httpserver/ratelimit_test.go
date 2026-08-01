@@ -326,13 +326,26 @@ func requestFrom(peer string, forwarded ...string) *http.Request {
 }
 
 func TestParseTrustedProxies(t *testing.T) {
-	t.Run("CIDRs, bare IPs, and blanks", func(t *testing.T) {
-		got, err := ParseTrustedProxies(" 127.0.0.1 , 10.0.0.0/8 ,, ::1 ")
+	// The whole accepted vocabulary: a loopback host, bare or as an explicit
+	// single-address prefix.
+	t.Run("loopback hosts and blanks", func(t *testing.T) {
+		for _, entry := range []string{"127.0.0.1", "127.0.0.1/32", "::1", "::1/128"} {
+			got, err := ParseTrustedProxies(entry)
+			if err != nil {
+				t.Errorf("ParseTrustedProxies(%q) error = %v", entry, err)
+				continue
+			}
+			if len(got) != 1 {
+				t.Errorf("ParseTrustedProxies(%q) = %v, want one address", entry, got)
+			}
+		}
+
+		got, err := ParseTrustedProxies(" 127.0.0.1 ,, ::1 ")
 		if err != nil {
 			t.Fatalf("error = %v", err)
 		}
-		if len(got) != 3 {
-			t.Fatalf("parsed %d prefixes, want 3: %v", len(got), got)
+		if len(got) != 2 {
+			t.Fatalf("parsed %d addresses, want 2: %v", len(got), got)
 		}
 	})
 
@@ -343,36 +356,60 @@ func TestParseTrustedProxies(t *testing.T) {
 		}
 	})
 
+	// A range is refused whatever it covers. Written as "one host" rather than
+	// "anything loopback", so 127.0.0.0/8 goes with 10.0.0.0/8 — it is harmless
+	// but needless, and one rule is easier to hold than two.
+	t.Run("a range is refused, loopback or not", func(t *testing.T) {
+		for _, entry := range []string{"10.0.0.0/8", "192.0.2.0/24", "127.0.0.0/8", "::1/127"} {
+			if _, err := ParseTrustedProxies(entry); err == nil {
+				t.Errorf("ParseTrustedProxies(%q) = nil error, want a refusal", entry)
+			}
+		}
+	})
+
+	// The reported bug: a set containing a client lets that client pick its own
+	// bucket. Off-host addresses are the only way to write one, so they go.
+	t.Run("an address off this machine is refused", func(t *testing.T) {
+		for _, entry := range []string{"192.168.1.5", "10.0.0.1", "203.0.113.7", "fe80::1"} {
+			if _, err := ParseTrustedProxies(entry); err == nil {
+				t.Errorf("ParseTrustedProxies(%q) = nil error, want a refusal", entry)
+			}
+		}
+	})
+
 	t.Run("a malformed entry is refused", func(t *testing.T) {
 		if _, err := ParseTrustedProxies("127.0.0.1, not-an-ip"); err == nil {
 			t.Fatal("ParseTrustedProxies() accepted a malformed entry, want an error")
 		}
 	})
 
+	// Every refusal has to say what to write instead: whoever wrote the
+	// rejected value had a deployment in mind.
+	t.Run("a refusal names the entry and the remedy", func(t *testing.T) {
+		for _, entry := range []string{"10.0.0.0/8", "192.168.1.5", "not-an-ip"} {
+			_, err := ParseTrustedProxies(entry)
+			if err == nil {
+				t.Fatalf("ParseTrustedProxies(%q) = nil error", entry)
+			}
+			if !strings.Contains(err.Error(), entry) || !strings.Contains(err.Error(), "127.0.0.1") {
+				t.Errorf("ParseTrustedProxies(%q) error = %v, want it to name the entry and the remedy", entry, err)
+			}
+		}
+	})
+
 	// An entry that parses but can never match is the failure startup
 	// validation exists to prevent, so it has to be normalized rather than
-	// merely accepted.
+	// merely accepted. See #43; narrowing to loopback does not cover it,
+	// because IsLoopback is already true of the mapped form.
 	t.Run("a mapped entry is stored unmapped", func(t *testing.T) {
 		for _, entry := range []string{"::ffff:127.0.0.1", "::ffff:127.0.0.1/128"} {
 			got, err := ParseTrustedProxies(entry)
 			if err != nil {
 				t.Fatalf("ParseTrustedProxies(%q) error = %v", entry, err)
 			}
-			if len(got) != 1 || got[0] != netip.MustParsePrefix("127.0.0.1/32") {
-				t.Errorf("ParseTrustedProxies(%q) = %v, want [127.0.0.1/32]", entry, got)
+			if len(got) != 1 || got[0] != netip.MustParseAddr("127.0.0.1") {
+				t.Errorf("ParseTrustedProxies(%q) = %v, want [127.0.0.1]", entry, got)
 			}
-		}
-	})
-
-	// A prefix shorter than ::ffff:0:0/96 reaches outside the mapped block, so
-	// it is a real IPv6 prefix and must survive as written.
-	t.Run("a wide IPv6 prefix is not mistaken for a mapped one", func(t *testing.T) {
-		got, err := ParseTrustedProxies("::ffff:127.0.0.1/64")
-		if err != nil {
-			t.Fatalf("error = %v", err)
-		}
-		if len(got) != 1 || got[0] != netip.MustParsePrefix("::/64") {
-			t.Errorf("ParseTrustedProxies() = %v, want [::/64]", got)
 		}
 	})
 }
@@ -391,10 +428,10 @@ func TestClientIPPeelsThroughTrustedProxiesOnly(t *testing.T) {
 		{"an untrusted peer ignores the header", "127.0.0.1/32", "203.0.113.9:5000", []string{"203.0.113.7"}, "203.0.113.9"},
 		{"a trusted peer, one hop", "127.0.0.1/32", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"a forged left prefix is never reached", "127.0.0.1/32", "127.0.0.1:5000", []string{"1.2.3.4, 203.0.113.7"}, "203.0.113.7"},
-		{"the walk peels every trusted hop", "10.0.0.0/8", "10.0.0.2:5000", []string{"203.0.113.7, 10.0.0.9"}, "203.0.113.7"},
+		{"the walk peels every trusted hop", "127.0.0.1,::1", "127.0.0.1:5000", []string{"203.0.113.7, ::1"}, "203.0.113.7"},
 		{"an absent chain falls back to the peer", "127.0.0.1/32", "127.0.0.1:5000", nil, "127.0.0.1"},
-		{"an all-trusted chain falls back to the peer", "10.0.0.0/8", "10.0.0.2:5000", []string{"10.0.0.9"}, "10.0.0.2"},
-		{"CIDR membership admits the peer", "192.0.2.0/24", "192.0.2.50:5000", []string{"203.0.113.7"}, "203.0.113.7"},
+		{"an all-trusted chain falls back to the peer", "127.0.0.1,::1", "127.0.0.1:5000", []string{"::1"}, "127.0.0.1"},
+		{"an IPv6 loopback peer is trusted", "::1", "[::1]:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"a mapped IPv6 client is normalized", "127.0.0.1/32", "127.0.0.1:5000", []string{"::ffff:203.0.113.7"}, "203.0.113.7"},
 		{"a mapped trusted entry still matches the peer", "::ffff:127.0.0.1", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"a mapped trusted prefix still matches the peer", "::ffff:127.0.0.1/128", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},

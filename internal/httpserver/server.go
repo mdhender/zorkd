@@ -55,13 +55,13 @@ type Option func(*Server)
 
 // WithTrustedProxies names the proxy addresses whose X-Forwarded-For may be
 // believed when attributing a request to a source for rate limiting. Parse the
-// list with [ParseTrustedProxies].
+// list with [ParseTrustedProxies], which accepts only a loopback host.
 //
 // With none set, the forwarded chain is ignored and the source is always the
 // direct peer — which behind a reverse proxy is the proxy, so every player
 // would share one bucket. Naming the proxy is what lets the limiter see past it.
-func WithTrustedProxies(prefixes []netip.Prefix) Option {
-	return func(s *Server) { s.trusted = trustedProxies(prefixes) }
+func WithTrustedProxies(addrs []netip.Addr) Option {
+	return func(s *Server) { s.trusted = trustedProxies(addrs) }
 }
 
 // New returns a Server. Every dependency is required except the logger, which
