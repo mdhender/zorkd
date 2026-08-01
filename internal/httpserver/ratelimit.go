@@ -96,6 +96,11 @@ type trustedProxies []netip.Prefix
 // proxies allowed to set X-Forwarded-For. A bare IP address is accepted as a
 // single host. An empty string is no proxies.
 //
+// Entries are stored unmapped. contains unmaps the address it is testing, so a
+// mapped entry such as ::ffff:127.0.0.1 would otherwise parse without error and
+// then never match a peer of 127.0.0.1 — a configuration that starts the server,
+// reports a prefix count, and silently trusts nothing.
+//
 // It is validated at startup so a malformed list stops the server rather than
 // silently disabling the feature it was meant to enable.
 func ParseTrustedProxies(list string) ([]netip.Prefix, error) {
@@ -106,16 +111,36 @@ func ParseTrustedProxies(list string) ([]netip.Prefix, error) {
 			continue
 		}
 		if prefix, err := netip.ParsePrefix(field); err == nil {
-			prefixes = append(prefixes, prefix.Masked())
+			prefixes = append(prefixes, unmapPrefix(prefix).Masked())
 			continue
 		}
 		addr, err := netip.ParseAddr(field)
 		if err != nil {
 			return nil, fmt.Errorf("trusted proxy %q: not a CIDR or IP address", field)
 		}
+		addr = addr.Unmap()
 		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
 	}
 	return prefixes, nil
+}
+
+// mappedV4Bits is the length of the ::ffff:0:0/96 prefix that IPv4-mapped IPv6
+// addresses sit behind. Unmapping an address drops those bits, and a mask
+// written against the mapped form has to lose the same ones.
+const mappedV4Bits = 96
+
+// unmapPrefix rewrites a prefix written against IPv4-mapped IPv6 space as the
+// IPv4 prefix it describes, so ::ffff:127.0.0.1/128 and 127.0.0.1/32 are one
+// entry rather than two that never agree.
+//
+// A prefix shorter than the mapped block is left alone: it reaches beyond
+// ::ffff:0:0/96 and so is a genuine IPv6 prefix that means what it says.
+func unmapPrefix(p netip.Prefix) netip.Prefix {
+	addr := p.Addr().Unmap()
+	if addr == p.Addr() || p.Bits() < mappedV4Bits {
+		return p
+	}
+	return netip.PrefixFrom(addr, p.Bits()-mappedV4Bits)
 }
 
 // contains reports whether an address string falls in the trusted set.

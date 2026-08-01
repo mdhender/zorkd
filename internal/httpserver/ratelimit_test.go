@@ -3,6 +3,7 @@ package httpserver
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -347,6 +348,33 @@ func TestParseTrustedProxies(t *testing.T) {
 			t.Fatal("ParseTrustedProxies() accepted a malformed entry, want an error")
 		}
 	})
+
+	// An entry that parses but can never match is the failure startup
+	// validation exists to prevent, so it has to be normalized rather than
+	// merely accepted.
+	t.Run("a mapped entry is stored unmapped", func(t *testing.T) {
+		for _, entry := range []string{"::ffff:127.0.0.1", "::ffff:127.0.0.1/128"} {
+			got, err := ParseTrustedProxies(entry)
+			if err != nil {
+				t.Fatalf("ParseTrustedProxies(%q) error = %v", entry, err)
+			}
+			if len(got) != 1 || got[0] != netip.MustParsePrefix("127.0.0.1/32") {
+				t.Errorf("ParseTrustedProxies(%q) = %v, want [127.0.0.1/32]", entry, got)
+			}
+		}
+	})
+
+	// A prefix shorter than ::ffff:0:0/96 reaches outside the mapped block, so
+	// it is a real IPv6 prefix and must survive as written.
+	t.Run("a wide IPv6 prefix is not mistaken for a mapped one", func(t *testing.T) {
+		got, err := ParseTrustedProxies("::ffff:127.0.0.1/64")
+		if err != nil {
+			t.Fatalf("error = %v", err)
+		}
+		if len(got) != 1 || got[0] != netip.MustParsePrefix("::/64") {
+			t.Errorf("ParseTrustedProxies() = %v, want [::/64]", got)
+		}
+	})
 }
 
 // clientIP reads X-Forwarded-For only for a request whose direct peer is a
@@ -368,6 +396,8 @@ func TestClientIPPeelsThroughTrustedProxiesOnly(t *testing.T) {
 		{"an all-trusted chain falls back to the peer", "10.0.0.0/8", "10.0.0.2:5000", []string{"10.0.0.9"}, "10.0.0.2"},
 		{"CIDR membership admits the peer", "192.0.2.0/24", "192.0.2.50:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"a mapped IPv6 client is normalized", "127.0.0.1/32", "127.0.0.1:5000", []string{"::ffff:203.0.113.7"}, "203.0.113.7"},
+		{"a mapped trusted entry still matches the peer", "::ffff:127.0.0.1", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
+		{"a mapped trusted prefix still matches the peer", "::ffff:127.0.0.1/128", "127.0.0.1:5000", []string{"203.0.113.7"}, "203.0.113.7"},
 		{"several header lines are one chain", "127.0.0.1/32", "127.0.0.1:5000", []string{"1.2.3.4", "203.0.113.7"}, "203.0.113.7"},
 	}
 
